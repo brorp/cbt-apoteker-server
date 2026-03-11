@@ -1,4 +1,4 @@
-import type { Request, Response } from "express";
+import type { Response } from "express";
 import { desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "../config/db.js";
@@ -13,6 +13,14 @@ import {
 } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import { logActivity } from "../utils/activityLog.js";
+import {
+  DocxQuestionImportError,
+  parseQuestionTemplateDocx,
+} from "../utils/docxQuestionImport.js";
+import {
+  getUploadedBinaryFile,
+  isUploadRequestError,
+} from "../utils/requestUpload.js";
 
 type QuestionPayload = {
   question_text?: string;
@@ -28,6 +36,26 @@ type QuestionPayload = {
 
 const isValidOptionKey = (value: unknown): value is OptionKey =>
   value === "a" || value === "b" || value === "c" || value === "d" || value === "e";
+
+const normalizeBoolean = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no") {
+    return false;
+  }
+
+  return null;
+};
 
 const toQuestionResponse = (question: {
   id: number;
@@ -573,20 +601,123 @@ export const importQuestions = async (
   req: AuthenticatedRequest,
   res: Response,
 ): Promise<void> => {
-  // Multipart XLSX parser is not configured in this build yet.
-  // Endpoint is kept to avoid 404 on frontend integration.
-  res.status(501).json({
-    message:
-      "XLSX import is not configured on this server yet. Install file parser middleware to enable this endpoint.",
-  });
-  await logActivity({
-    actorUserId: req.user?.userId ?? null,
-    actorRole: req.user?.role ?? null,
-    action: "ADMIN_QUESTION_IMPORT",
-    entity: "QUESTION",
-    status: "failed",
-    message: "Question import requested but not configured.",
-  });
+  try {
+    const uploadedFile = await getUploadedBinaryFile(req);
+    const normalizedName = uploadedFile.originalName.toLowerCase();
+
+    if (!normalizedName.endsWith(".docx")) {
+      await logActivity({
+        actorUserId: req.user?.userId ?? null,
+        actorRole: req.user?.role ?? null,
+        action: "ADMIN_QUESTION_IMPORT",
+        entity: "QUESTION",
+        status: "failed",
+        message: "Question import failed: uploaded file is not a .docx file.",
+        metadata: {
+          fileName: uploadedFile.originalName,
+          mimeType: uploadedFile.mimeType,
+        },
+      });
+      res.status(400).json({
+        message: "File harus berformat .docx sesuai template bank soal.",
+      });
+      return;
+    }
+
+    const parsedQuestions = parseQuestionTemplateDocx(uploadedFile.buffer);
+    if (parsedQuestions.length === 0) {
+      res.status(400).json({
+        message: "Template .docx tidak mengandung soal yang bisa diimpor.",
+      });
+      return;
+    }
+
+    const isActive =
+      normalizeBoolean(
+        req.query.is_active ??
+          uploadedFile.fields.is_active ??
+          uploadedFile.fields.isActive,
+      ) ?? false;
+
+    const importedRows = await db.transaction(async (tx) =>
+      tx
+        .insert(questions)
+        .values(
+          parsedQuestions.map((item) => ({
+            questionText: item.questionText,
+            optionA: item.optionA,
+            optionB: item.optionB,
+            optionC: item.optionC,
+            optionD: item.optionD,
+            optionE: item.optionE,
+            correctAnswer: item.correctAnswer,
+            explanation: item.explanation,
+            isActive,
+          })),
+        )
+        .returning({ id: questions.id }),
+    );
+
+    res.status(201).json({
+      message: "Question bank imported successfully.",
+      imported_count: importedRows.length,
+      is_active: isActive,
+      file_name: uploadedFile.originalName,
+      question_ids: importedRows.map((item) => item.id),
+    });
+
+    await logActivity({
+      actorUserId: req.user?.userId ?? null,
+      actorRole: req.user?.role ?? null,
+      action: "ADMIN_QUESTION_IMPORT",
+      entity: "QUESTION",
+      status: "success",
+      message: "Question bank imported from .docx template.",
+      metadata: {
+        fileName: uploadedFile.originalName,
+        importedCount: importedRows.length,
+        isActive,
+      },
+    });
+  } catch (error) {
+    console.error("importQuestions error:", error);
+
+    if (isUploadRequestError(error)) {
+      await logActivity({
+        actorUserId: req.user?.userId ?? null,
+        actorRole: req.user?.role ?? null,
+        action: "ADMIN_QUESTION_IMPORT",
+        entity: "QUESTION",
+        status: "failed",
+        message: error.message,
+      });
+      res.status(error.statusCode).json({ message: error.message });
+      return;
+    }
+
+    if (error instanceof DocxQuestionImportError) {
+      await logActivity({
+        actorUserId: req.user?.userId ?? null,
+        actorRole: req.user?.role ?? null,
+        action: "ADMIN_QUESTION_IMPORT",
+        entity: "QUESTION",
+        status: "failed",
+        message: error.message,
+      });
+      res.status(400).json({ message: error.message });
+      return;
+    }
+
+    await logActivity({
+      actorUserId: req.user?.userId ?? null,
+      actorRole: req.user?.role ?? null,
+      action: "ADMIN_QUESTION_IMPORT",
+      entity: "QUESTION",
+      status: "failed",
+      message: "Question import failed due to internal server error.",
+    });
+    res.status(500).json({ message: "Internal server error." });
+  }
 };
 
 export const selectBatch = async (
