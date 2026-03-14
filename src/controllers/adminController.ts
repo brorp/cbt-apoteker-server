@@ -2,6 +2,7 @@ import type { Response } from "express";
 import { desc, eq, inArray } from "drizzle-orm";
 
 import { db } from "../config/db.js";
+import { syncDefaultExamPackages } from "../db/defaultPackages.js";
 import {
   activityLogs,
   examPackages,
@@ -31,7 +32,9 @@ type QuestionPayload = {
   option_e?: string;
   correct_answer?: OptionKey;
   explanation?: string;
-  is_active?: boolean;
+  is_active?: unknown;
+  package_id?: unknown;
+  packageId?: unknown;
 };
 
 const isValidOptionKey = (value: unknown): value is OptionKey =>
@@ -57,8 +60,44 @@ const normalizeBoolean = (value: unknown): boolean | null => {
   return null;
 };
 
+const normalizePositiveInteger = (value: unknown): number | null => {
+  if (typeof value === "number") {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const getQuestionPackage = async (packageId: number) => {
+  const [questionPackage] = await db
+    .select({
+      id: examPackages.id,
+      name: examPackages.name,
+      questionCount: examPackages.questionCount,
+      isActive: examPackages.isActive,
+    })
+    .from(examPackages)
+    .where(eq(examPackages.id, packageId))
+    .limit(1);
+
+  return questionPackage ?? null;
+};
+
 const toQuestionResponse = (question: {
   id: number;
+  packageId: number | null;
+  packageName: string | null;
+  packageQuestionCount: number | null;
   questionText: string;
   optionA: string;
   optionB: string;
@@ -70,6 +109,9 @@ const toQuestionResponse = (question: {
   isActive: boolean;
 }) => ({
   id: question.id,
+  package_id: question.packageId,
+  package_name: question.packageName,
+  package_question_count: question.packageQuestionCount,
   question_text: question.questionText,
   option_a: question.optionA,
   option_b: question.optionB,
@@ -244,11 +286,15 @@ export const listExamResults = async (
   res: Response,
 ): Promise<void> => {
   try {
+    await syncDefaultExamPackages();
+
     const rows = await db
       .select({
         sessionId: examSessions.id,
         userId: examSessions.userId,
         userName: users.name,
+        packageId: examSessions.packageId,
+        packageName: examPackages.name,
         status: examSessions.status,
         score: examSessions.score,
         startTime: examSessions.startTime,
@@ -256,6 +302,7 @@ export const listExamResults = async (
       })
       .from(examSessions)
       .leftJoin(users, eq(examSessions.userId, users.id))
+      .leftJoin(examPackages, eq(examSessions.packageId, examPackages.id))
       .orderBy(desc(examSessions.startTime));
 
     res.status(200).json(
@@ -263,6 +310,8 @@ export const listExamResults = async (
         session_id: row.sessionId,
         user_id: row.userId,
         user_name: row.userName ?? "Unknown",
+        package_id: row.packageId,
+        package_name: row.packageName ?? null,
         status: row.status,
         score: row.score ?? 0,
         start_time: row.startTime,
@@ -297,9 +346,14 @@ export const listQuestions = async (
   res: Response,
 ): Promise<void> => {
   try {
+    await syncDefaultExamPackages();
+
     const rows = await db
       .select({
         id: questions.id,
+        packageId: questions.packageId,
+        packageName: examPackages.name,
+        packageQuestionCount: examPackages.questionCount,
         questionText: questions.questionText,
         optionA: questions.optionA,
         optionB: questions.optionB,
@@ -311,6 +365,7 @@ export const listQuestions = async (
         isActive: questions.isActive,
       })
       .from(questions)
+      .leftJoin(examPackages, eq(questions.packageId, examPackages.id))
       .orderBy(desc(questions.id));
 
     res.status(200).json(rows.map(toQuestionResponse));
@@ -342,9 +397,14 @@ export const createQuestion = async (
   res: Response,
 ): Promise<void> => {
   try {
+    await syncDefaultExamPackages();
+
     const body = req.body as QuestionPayload;
+    const packageId = normalizePositiveInteger(body.package_id ?? body.packageId);
+    const isActive = normalizeBoolean(body.is_active) ?? false;
 
     if (
+      !packageId ||
       !body.question_text ||
       !body.option_a ||
       !body.option_b ||
@@ -364,14 +424,30 @@ export const createQuestion = async (
       });
       res.status(400).json({
         message:
-          "Invalid payload. Required fields: question_text, option_a-e, correct_answer, explanation.",
+          "Invalid payload. Required fields: package_id, question_text, option_a-e, correct_answer, explanation.",
       });
+      return;
+    }
+
+    const questionPackage = await getQuestionPackage(packageId);
+    if (!questionPackage || !questionPackage.isActive) {
+      await logActivity({
+        actorUserId: req.user?.userId ?? null,
+        actorRole: req.user?.role ?? null,
+        action: "ADMIN_QUESTION_CREATE",
+        entity: "QUESTION",
+        status: "failed",
+        message: "Create question failed: invalid package id.",
+        metadata: { packageId },
+      });
+      res.status(400).json({ message: "Invalid package_id." });
       return;
     }
 
     const [created] = await db
       .insert(questions)
       .values({
+        packageId,
         questionText: body.question_text.trim(),
         optionA: body.option_a.trim(),
         optionB: body.option_b.trim(),
@@ -380,10 +456,11 @@ export const createQuestion = async (
         optionE: body.option_e.trim(),
         correctAnswer: body.correct_answer,
         explanation: body.explanation.trim(),
-        isActive: Boolean(body.is_active),
+        isActive,
       })
       .returning({
         id: questions.id,
+        packageId: questions.packageId,
         questionText: questions.questionText,
         optionA: questions.optionA,
         optionB: questions.optionB,
@@ -395,7 +472,13 @@ export const createQuestion = async (
         isActive: questions.isActive,
       });
 
-    res.status(201).json(toQuestionResponse(created));
+    res.status(201).json(
+      toQuestionResponse({
+        ...created,
+        packageName: questionPackage.name,
+        packageQuestionCount: questionPackage.questionCount,
+      }),
+    );
     await logActivity({
       actorUserId: req.user?.userId ?? null,
       actorRole: req.user?.role ?? null,
@@ -404,6 +487,10 @@ export const createQuestion = async (
       entityId: created.id,
       status: "success",
       message: "Question created.",
+      metadata: {
+        packageId,
+        packageName: questionPackage.name,
+      },
     });
   } catch (error) {
     console.error("createQuestion error:", error);
@@ -424,6 +511,8 @@ export const updateQuestion = async (
   res: Response,
 ): Promise<void> => {
   try {
+    await syncDefaultExamPackages();
+
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       await logActivity({
@@ -441,6 +530,7 @@ export const updateQuestion = async (
 
     const body = req.body as QuestionPayload;
     const updates: Partial<{
+      packageId: number;
       questionText: string;
       optionA: string;
       optionB: string;
@@ -452,6 +542,44 @@ export const updateQuestion = async (
       isActive: boolean;
       updatedAt: Date;
     }> = {};
+    let responsePackage: Awaited<ReturnType<typeof getQuestionPackage>> | null = null;
+
+    const packageIdInput = body.package_id ?? body.packageId;
+    if (packageIdInput !== undefined) {
+      const packageId = normalizePositiveInteger(packageIdInput);
+      if (!packageId) {
+        await logActivity({
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+          action: "ADMIN_QUESTION_UPDATE",
+          entity: "QUESTION",
+          entityId: id,
+          status: "failed",
+          message: "Update question failed: invalid package id.",
+          metadata: { packageId: packageIdInput },
+        });
+        res.status(400).json({ message: "Invalid package_id." });
+        return;
+      }
+
+      responsePackage = await getQuestionPackage(packageId);
+      if (!responsePackage || !responsePackage.isActive) {
+        await logActivity({
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+          action: "ADMIN_QUESTION_UPDATE",
+          entity: "QUESTION",
+          entityId: id,
+          status: "failed",
+          message: "Update question failed: package not found.",
+          metadata: { packageId },
+        });
+        res.status(400).json({ message: "Invalid package_id." });
+        return;
+      }
+
+      updates.packageId = packageId;
+    }
 
     if (typeof body.question_text === "string") updates.questionText = body.question_text;
     if (typeof body.option_a === "string") updates.optionA = body.option_a;
@@ -461,7 +589,25 @@ export const updateQuestion = async (
     if (typeof body.option_e === "string") updates.optionE = body.option_e;
     if (isValidOptionKey(body.correct_answer)) updates.correctAnswer = body.correct_answer;
     if (typeof body.explanation === "string") updates.explanation = body.explanation;
-    if (typeof body.is_active === "boolean") updates.isActive = body.is_active;
+    if (body.is_active !== undefined) {
+      const isActive = normalizeBoolean(body.is_active);
+      if (isActive === null) {
+        await logActivity({
+          actorUserId: req.user?.userId ?? null,
+          actorRole: req.user?.role ?? null,
+          action: "ADMIN_QUESTION_UPDATE",
+          entity: "QUESTION",
+          entityId: id,
+          status: "failed",
+          message: "Update question failed: invalid is_active value.",
+          metadata: { isActive: body.is_active },
+        });
+        res.status(400).json({ message: "Invalid is_active value." });
+        return;
+      }
+
+      updates.isActive = isActive;
+    }
     updates.updatedAt = new Date();
 
     const isOnlyUpdatedAt = Object.keys(updates).length === 1;
@@ -485,6 +631,7 @@ export const updateQuestion = async (
       .where(eq(questions.id, id))
       .returning({
         id: questions.id,
+        packageId: questions.packageId,
         questionText: questions.questionText,
         optionA: questions.optionA,
         optionB: questions.optionB,
@@ -510,7 +657,17 @@ export const updateQuestion = async (
       return;
     }
 
-    res.status(200).json(toQuestionResponse(updated));
+    if (!responsePackage && updated.packageId) {
+      responsePackage = await getQuestionPackage(updated.packageId);
+    }
+
+    res.status(200).json(
+      toQuestionResponse({
+        ...updated,
+        packageName: responsePackage?.name ?? null,
+        packageQuestionCount: responsePackage?.questionCount ?? null,
+      }),
+    );
     await logActivity({
       actorUserId: req.user?.userId ?? null,
       actorRole: req.user?.role ?? null,
@@ -519,6 +676,10 @@ export const updateQuestion = async (
       entityId: updated.id,
       status: "success",
       message: "Question updated.",
+      metadata: {
+        packageId: updated.packageId,
+        packageName: responsePackage?.name ?? null,
+      },
     });
   } catch (error) {
     console.error("updateQuestion error:", error);
@@ -602,6 +763,8 @@ export const importQuestions = async (
   res: Response,
 ): Promise<void> => {
   try {
+    await syncDefaultExamPackages();
+
     const uploadedFile = await getUploadedBinaryFile(req);
     const normalizedName = uploadedFile.originalName.toLowerCase();
 
@@ -632,6 +795,23 @@ export const importQuestions = async (
       return;
     }
 
+    const packageId = normalizePositiveInteger(
+      req.query.package_id ??
+        req.query.packageId ??
+        uploadedFile.fields.package_id ??
+        uploadedFile.fields.packageId,
+    );
+    if (!packageId) {
+      res.status(400).json({ message: "package_id is required." });
+      return;
+    }
+
+    const questionPackage = await getQuestionPackage(packageId);
+    if (!questionPackage || !questionPackage.isActive) {
+      res.status(400).json({ message: "Invalid package_id." });
+      return;
+    }
+
     const isActive =
       normalizeBoolean(
         req.query.is_active ??
@@ -644,6 +824,7 @@ export const importQuestions = async (
         .insert(questions)
         .values(
           parsedQuestions.map((item) => ({
+            packageId,
             questionText: item.questionText,
             optionA: item.optionA,
             optionB: item.optionB,
@@ -661,6 +842,8 @@ export const importQuestions = async (
     res.status(201).json({
       message: "Question bank imported successfully.",
       imported_count: importedRows.length,
+      package_id: packageId,
+      package_name: questionPackage.name,
       is_active: isActive,
       file_name: uploadedFile.originalName,
       question_ids: importedRows.map((item) => item.id),
@@ -677,6 +860,8 @@ export const importQuestions = async (
         fileName: uploadedFile.originalName,
         importedCount: importedRows.length,
         isActive,
+        packageId,
+        packageName: questionPackage.name,
       },
     });
   } catch (error) {

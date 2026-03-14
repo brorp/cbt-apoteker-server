@@ -1,48 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { Request, Response } from "express";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 import { db } from "../config/db.js";
+import { syncDefaultExamPackages } from "../db/defaultPackages.js";
 import { examPackages, transactions, users } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import { logActivity } from "../utils/activityLog.js";
 
-const DEFAULT_PACKAGES: Array<{
-  name: string;
-  description: string;
-  price: number;
-  features: string;
-}> = [
-  {
-    name: "Paket Premium Basic",
-    description: "Akses 1x simulasi CBT + pembahasan hasil.",
-    price: 149000,
-    features: "1 simulasi, analisis skor, pembahasan lengkap",
-  },
-  {
-    name: "Paket Premium Pro",
-    description: "Akses 3x simulasi CBT + pembahasan hasil.",
-    price: 249000,
-    features: "3 simulasi, analisis skor detail, pembahasan lengkap",
-  },
-];
-
-const ensurePackages = async (): Promise<void> => {
-  const rows = await db
-    .select({ id: examPackages.id })
-    .from(examPackages)
-    .limit(1);
-
-  if (rows.length > 0) {
-    return;
-  }
-
-  await db.insert(examPackages).values(DEFAULT_PACKAGES);
-};
-
 export const listPackages = async (_req: Request, res: Response): Promise<void> => {
   try {
-    await ensurePackages();
+    await syncDefaultExamPackages();
 
     const rows = await db
       .select({
@@ -51,9 +19,11 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
         description: examPackages.description,
         price: examPackages.price,
         features: examPackages.features,
+        questionCount: examPackages.questionCount,
       })
       .from(examPackages)
-      .orderBy(asc(examPackages.price));
+      .where(eq(examPackages.isActive, true))
+      .orderBy(asc(examPackages.price), asc(examPackages.questionCount), asc(examPackages.id));
 
     res.status(200).json(
       rows.map((item) => ({
@@ -62,6 +32,7 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
         description: item.description,
         price: item.price,
         features: item.features,
+        question_count: item.questionCount,
       })),
     );
   } catch (error) {
@@ -75,7 +46,7 @@ export const createTransaction = async (
   res: Response,
 ): Promise<void> => {
   try {
-    await ensurePackages();
+    await syncDefaultExamPackages();
 
     if (!req.user) {
       res.status(401).json({ message: "Unauthorized." });
@@ -92,9 +63,13 @@ export const createTransaction = async (
     }
 
     const [selectedPackage] = await db
-      .select({ id: examPackages.id })
+      .select({
+        id: examPackages.id,
+        name: examPackages.name,
+        price: examPackages.price,
+      })
       .from(examPackages)
-      .where(eq(examPackages.id, packageId))
+      .where(and(eq(examPackages.id, packageId), eq(examPackages.isActive, true)))
       .limit(1);
 
     if (!selectedPackage) {
@@ -102,14 +77,18 @@ export const createTransaction = async (
       return;
     }
 
-    const paymentGatewayUrl = `https://dummy-payment.local/pay/${randomUUID()}`;
+    const paymentGatewayUrl =
+      selectedPackage.price === 0
+        ? ""
+        : `https://dummy-payment.local/pay/${randomUUID()}`;
+    const transactionStatus = selectedPackage.price === 0 ? "success" : "pending";
 
     const [created] = await db
       .insert(transactions)
       .values({
         userId: req.user.userId,
         packageId,
-        status: "pending",
+        status: transactionStatus,
         paymentGatewayUrl,
       })
       .returning({
@@ -125,6 +104,7 @@ export const createTransaction = async (
       id: created.id,
       user_id: created.userId,
       package_id: created.packageId,
+      package_name: selectedPackage.name,
       status: created.status,
       payment_gateway_url: created.paymentGatewayUrl,
       created_at: created.createdAt,
@@ -138,7 +118,12 @@ export const createTransaction = async (
       entityId: created.id,
       status: "success",
       message: "Transaction created.",
-      metadata: { packageId },
+      metadata: {
+        packageId,
+        packageName: selectedPackage.name,
+        price: selectedPackage.price,
+        transactionStatus,
+      },
     });
   } catch (error) {
     console.error("createTransaction error:", error);

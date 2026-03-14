@@ -100,8 +100,27 @@ export const activityLogs = pgTable("activity_logs", {
     .defaultNow(),
 });
 
+export const examPackages = pgTable("exam_packages", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 150 }).notNull(),
+  description: text("description").notNull(),
+  price: integer("price").notNull(),
+  features: text("features").notNull(),
+  questionCount: integer("question_count").notNull().default(50),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
 export const questions = pgTable("questions", {
   id: serial("id").primaryKey(),
+  packageId: integer("package_id").references(() => examPackages.id, {
+    onDelete: "set null",
+  }),
   questionText: text("question_text").notNull(),
   optionA: text("option_a").notNull(),
   optionB: text("option_b").notNull(),
@@ -111,20 +130,6 @@ export const questions = pgTable("questions", {
   correctAnswer: optionKeyEnum("correct_answer").notNull(),
   explanation: text("explanation").notNull(),
   isActive: boolean("is_active").notNull().default(false),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
-
-export const examPackages = pgTable("exam_packages", {
-  id: serial("id").primaryKey(),
-  name: varchar("name", { length: 150 }).notNull(),
-  description: text("description").notNull(),
-  price: integer("price").notNull(),
-  features: text("features").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -156,6 +161,9 @@ export const examSessions = pgTable("exam_sessions", {
   userId: integer("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
+  packageId: integer("package_id").references(() => examPackages.id, {
+    onDelete: "set null",
+  }),
   startTime: timestamp("start_time", { withTimezone: true }).notNull(),
   endTime: timestamp("end_time", { withTimezone: true }),
   status: examSessionStatusEnum("status").notNull().default("ongoing"),

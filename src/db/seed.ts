@@ -1,10 +1,13 @@
 import { db } from "../config/db.js";
+import { syncDefaultExamPackages } from "./defaultPackages.js";
 import { users } from "./schema.js";
 
 async function seed() {
     console.log("Seeding demo accounts...");
 
     try {
+        await syncDefaultExamPackages();
+
         // Super Admin
         await db.insert(users).values({
             name: "Super Admin",

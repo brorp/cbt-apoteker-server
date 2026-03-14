@@ -33,16 +33,24 @@ Status: `200 OK`
 - Method: `POST`
 - Path: `/api/exam/start`
 - Auth: Wajib (`Bearer token`)
-- Body: Tidak ada
+- Body:
+
+```json
+{
+  "package_id": 1
+}
+```
 
 #### Behavior
-- Hanya user premium (`users.is_premium = true`) yang bisa mulai ujian.
-- Sistem mengambil **200 soal aktif** (`questions.is_active = true`).
+- `package_id` wajib diisi.
+- Setiap sesi ujian sekarang terkait ke 1 package.
+- Sistem mengambil soal aktif berdasarkan `questions.package_id`.
+- Jumlah soal mengikuti `exam_packages.question_count`.
 - Urutan soal diacak.
 - Opsi jawaban (`a-e`) juga diacak per soal.
 - Jika user sudah punya sesi `ongoing`, endpoint ini **idempotent**:
   - Tidak membuat sesi baru.
-  - Mengembalikan sesi yang sudah berjalan.
+  - Mengembalikan sesi yang sudah berjalan jika package sama.
 
 #### Success Response (new session)
 Status: `201 Created`
@@ -51,8 +59,11 @@ Status: `201 Created`
 {
   "message": "Exam started successfully.",
   "sessionId": 123,
+  "package_id": 1,
+  "package_name": "Try Out CBT Klinis (100 Soal)",
+  "question_count": 100,
   "startTime": "2026-03-04T16:52:00.000Z",
-  "durationMinutes": 200,
+  "durationMinutes": 100,
   "gracePeriodMinutes": 1,
   "questions": [
     {
@@ -78,8 +89,11 @@ Status: `200 OK`
 {
   "message": "Ongoing session found.",
   "sessionId": 123,
+  "package_id": 1,
+  "package_name": "Try Out CBT Klinis (100 Soal)",
+  "question_count": 100,
   "startTime": "2026-03-04T16:52:00.000Z",
-  "durationMinutes": 200,
+  "durationMinutes": 100,
   "gracePeriodMinutes": 1,
   "questions": [
     {
@@ -99,32 +113,38 @@ Status: `200 OK`
 ```
 
 #### Error Responses
+- `400 Bad Request`
+  - `{"message":"Invalid package_id."}`
 - `401 Unauthorized`
   - `{"message":"Missing or invalid Authorization header."}`
   - `{"message":"Token is invalid or expired."}`
   - `{"message":"Token payload is invalid."}`
 - `403 Forbidden`
+  - Untuk package berbayar jika user belum premium:
   - `{"message":"Premium account required. Complete payment before starting exam."}`
 - `404 Not Found`
   - `{"message":"User not found."}`
+  - `{"message":"Exam package not found."}`
+- `409 Conflict`
+  - `{"message":"Another package exam session is still ongoing."}`
 - `422 Unprocessable Entity`
-  - Jika soal aktif kurang dari 200:
-  - `{"message":"Insufficient active questions. Required: 200, available: <n>."}`
+  - Jika soal aktif pada package kurang dari `question_count`:
+  - `{"message":"Insufficient active questions for package <name>. Required: <required>, available: <n>."}`
 - `500 Internal Server Error`
   - `{"message":"JWT_SECRET is not configured."}`
   - `{"message":"Internal server error."}`
 
 ## Constants Used by Current Implementation
-- `EXAM_QUESTION_LIMIT`: `200`
-- `EXAM_DURATION_MINUTES`: `200`
 - `EXAM_GRACE_PERIOD_MINUTES`: `1`
+- `durationMinutes`: mengikuti `exam_packages.question_count`
 
 ## Quick cURL Example
 
 ```bash
 curl -X POST http://localhost:3001/api/exam/start \
   -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -H "Content-Type: application/json"
+  -H "Content-Type: application/json" \
+  -d '{"package_id":1}'
 ```
 
 ---
@@ -136,6 +156,9 @@ curl -X POST http://localhost:3001/api/exam/start \
 - Supported Content-Type:
   - `multipart/form-data` dengan field file bernama `file`
   - `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+- Required package:
+  - Query `?package_id=1`
+  - Atau field multipart `package_id=1`
 - Optional flag:
   - Query `?is_active=true`
   - Atau field multipart `is_active=true`
@@ -160,6 +183,8 @@ Status: `201 Created`
 {
   "message": "Question bank imported successfully.",
   "imported_count": 5,
+  "package_id": 1,
+  "package_name": "Mini Try Out CBT Klinis (50 Soal)",
   "is_active": false,
   "file_name": "sample ryan format.docx",
   "question_ids": [101, 102, 103, 104, 105]
@@ -181,6 +206,7 @@ Status: `201 Created`
 curl -X POST http://localhost:3001/api/admin/questions/import \
   -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
   -F "file=@/absolute/path/template-bank-soal.docx" \
+  -F "package_id=1" \
   -F "is_active=false"
 ```
 
