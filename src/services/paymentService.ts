@@ -39,10 +39,9 @@ import {
   type LocalTransactionStatus,
 } from "../utils/transactionStatus.js";
 
-const DEFAULT_PAYMENT_METHOD = "qris";
+const DEFAULT_PAYMENT_METHOD = "gopay";
 
 const PAYMENT_METHODS = new Set([
-  "qris",
   "gopay",
   "bank_transfer",
 ]);
@@ -149,6 +148,7 @@ const recordPaymentEvent = async (input: {
 const findReusablePendingTransaction = async (input: {
   userId: number;
   packageId: number;
+  paymentMethod: string;
 }) => {
   const rows = await db
     .select({
@@ -162,6 +162,7 @@ const findReusablePendingTransaction = async (input: {
         eq(transactions.userId, input.userId),
         eq(transactions.packageId, input.packageId),
         eq(transactions.provider, "midtrans"),
+        eq(transactions.paymentMethod, input.paymentMethod),
         inArray(transactions.status, ["created", "pending", "challenge"]),
         or(isNull(transactions.expiresAt), gt(transactions.expiresAt, new Date())),
       ),
@@ -511,7 +512,7 @@ export const createTransactionOrder = async (input: {
   const paymentMethod = normalizePaymentMethod(input.paymentMethod);
   if (input.paymentMethod !== undefined && paymentMethod === null) {
     throw new PaymentServiceError(
-      "Unsupported payment_method. Allowed values: qris, gopay, bank_transfer.",
+      "Unsupported payment_method. Allowed values: gopay, bank_transfer.",
       400,
     );
   }
@@ -561,6 +562,7 @@ export const createTransactionOrder = async (input: {
       ? findReusablePendingTransaction({
           userId: input.userId,
           packageId: input.packageId,
+          paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
         })
       : Promise.resolve(null),
   ]);
