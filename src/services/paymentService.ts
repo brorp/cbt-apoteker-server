@@ -33,7 +33,6 @@ import {
 } from "./packageAccess.js";
 import {
   isPaidTransactionStatus,
-  isPendingLikeTransactionStatus,
   resolveTransactionStatusTransition,
   toClientTransactionStatus,
   type LocalTransactionStatus,
@@ -389,6 +388,8 @@ const serializeTransaction = async (
     currency: row.currency,
     payment_method: row.paymentMethod,
     payment_type: row.paymentType,
+    payment_status_detail: row.midtransTransactionStatus,
+    payment_page_url: row.paymentGatewayUrl,
     midtrans_transaction_id: row.midtransTransactionId,
     midtrans_order_id: row.midtransOrderId,
     midtrans_transaction_status: row.midtransTransactionStatus,
@@ -397,10 +398,7 @@ const serializeTransaction = async (
     status_message: row.statusMessage,
     payment_gateway_url: row.paymentGatewayUrl,
     snap_redirect_url: row.snapRedirectUrl,
-    snap_token:
-      options.viewer === "user" && isPendingLikeTransactionStatus(row.status)
-        ? row.snapToken
-        : null,
+    snap_token: options.viewer === "admin" ? row.snapToken : null,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
     paid_at: row.paidAt,
