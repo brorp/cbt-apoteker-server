@@ -51,14 +51,14 @@ const buildUrlFromPostgresEnv = (): string | null => {
 };
 
 export const resolveDatabaseUrl = (): string => {
-  const databaseUrl = process.env.DATABASE_URL?.trim();
-  if (databaseUrl) {
-    return databaseUrl;
-  }
-
   const constructed = buildUrlFromPostgresEnv();
   if (constructed) {
     return constructed;
+  }
+
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (databaseUrl) {
+    return databaseUrl;
   }
 
   throw new Error(
@@ -131,5 +131,5 @@ export const getDatabaseConfigWarning = (): string | null => {
     return null;
   }
 
-  return `DATABASE_URL and POSTGRES_* are inconsistent: ${mismatches.join("; ")}`;
+  return `DATABASE_URL and POSTGRES_* are inconsistent. POSTGRES_* will be used: ${mismatches.join("; ")}`;
 };

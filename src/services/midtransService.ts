@@ -118,10 +118,7 @@ export const createMidtransSnapTransaction = async (
   redirectUrl: string;
   raw: Record<string, unknown>;
 }> => {
-  const enabledPayments =
-    input.paymentMethod && input.paymentMethod !== "all"
-      ? [input.paymentMethod]
-      : undefined;
+  const enabledPayments = input.paymentMethod ? [input.paymentMethod] : undefined;
   const finishUrl = buildFinishUrl(input.orderCode);
 
   const raw = await midtransFetch<Record<string, unknown>>({
@@ -147,9 +144,6 @@ export const createMidtransSnapTransaction = async (
         phone: input.customer.phone,
       },
       enabled_payments: enabledPayments,
-      credit_card: {
-        secure: true,
-      },
       callbacks: finishUrl
         ? {
             finish: finishUrl,

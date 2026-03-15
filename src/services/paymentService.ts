@@ -39,21 +39,12 @@ import {
   type LocalTransactionStatus,
 } from "../utils/transactionStatus.js";
 
+const DEFAULT_PAYMENT_METHOD = "qris";
+
 const PAYMENT_METHODS = new Set([
-  "all",
   "qris",
   "gopay",
-  "shopeepay",
-  "credit_card",
   "bank_transfer",
-  "bca_va",
-  "bni_va",
-  "bri_va",
-  "permata_va",
-  "echannel",
-  "alfamart",
-  "indomaret",
-  "akulaku",
 ]);
 
 type TransactionViewer = "user" | "admin";
@@ -125,7 +116,7 @@ const normalizePaymentMethod = (value: unknown): string | null => {
 
   const normalized = value.trim().toLowerCase();
   if (!normalized) {
-    return "all";
+    return DEFAULT_PAYMENT_METHOD;
   }
 
   return PAYMENT_METHODS.has(normalized) ? normalized : null;
@@ -519,7 +510,10 @@ export const createTransactionOrder = async (input: {
 
   const paymentMethod = normalizePaymentMethod(input.paymentMethod);
   if (input.paymentMethod !== undefined && paymentMethod === null) {
-    throw new PaymentServiceError("Unsupported payment_method.", 400);
+    throw new PaymentServiceError(
+      "Unsupported payment_method. Allowed values: qris, gopay, bank_transfer.",
+      400,
+    );
   }
 
   const [user, selectedPackage] = await Promise.all([
@@ -643,7 +637,7 @@ export const createTransactionOrder = async (input: {
       status: "created",
       grossAmount: selectedPackage.price,
       currency: "IDR",
-      paymentMethod: paymentMethod ?? "all",
+      paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
       paymentGatewayUrl: "",
       expiresAt,
       lastStatusAt: new Date(),
@@ -658,7 +652,7 @@ export const createTransactionOrder = async (input: {
     const snap = await createMidtransSnapTransaction({
       orderCode,
       grossAmount: selectedPackage.price,
-      paymentMethod: paymentMethod ?? "all",
+      paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
       item: {
         id: selectedPackage.id,
         name: selectedPackage.name,
@@ -677,7 +671,7 @@ export const createTransactionOrder = async (input: {
       .set({
         provider: "midtrans",
         status: "pending",
-        paymentMethod: paymentMethod ?? "all",
+        paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
         snapToken: snap.token,
         snapRedirectUrl: snap.redirectUrl,
         paymentGatewayUrl: snap.redirectUrl,
@@ -695,7 +689,7 @@ export const createTransactionOrder = async (input: {
       eventType: "snap_transaction_created",
       payload: {
         order_code: orderCode,
-        payment_method: paymentMethod ?? "all",
+        payment_method: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
         snap: snap.raw,
       },
     });
