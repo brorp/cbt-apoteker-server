@@ -5,6 +5,8 @@ import cors from "cors";
 
 import { adminRoutes } from "./routes/adminRoutes.js";
 import { authRoutes } from "./routes/authRoutes.js";
+import { databaseConnectionInfo, queryClient } from "./config/db.js";
+import { getDatabaseConfigWarning } from "./config/databaseUrl.js";
 import { examRoutes } from "./routes/examRoutes.js";
 import { activityMiddleware } from "./middlewares/activityMiddleware.js";
 import { transactionRoutes } from "./routes/transactionRoutes.js";
@@ -27,6 +29,26 @@ app.use("/api/exam", examRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api", transactionRoutes);
 
-app.listen(port, () => {
-  console.log(`CBT API server listening on port ${port}`);
-});
+const startServer = async () => {
+  try {
+    const configWarning = getDatabaseConfigWarning();
+    if (configWarning) {
+      console.warn(configWarning);
+    }
+
+    await queryClient`select 1`;
+    console.log("Database connection established.", databaseConnectionInfo);
+
+    app.listen(port, () => {
+      console.log(`CBT API server listening on port ${port}`);
+    });
+  } catch (error) {
+    console.error("Failed to connect to PostgreSQL.", {
+      ...databaseConnectionInfo,
+      message: error instanceof Error ? error.message : "Unknown database error.",
+    });
+    process.exit(1);
+  }
+};
+
+void startServer();
