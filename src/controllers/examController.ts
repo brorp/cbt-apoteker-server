@@ -1,6 +1,6 @@
 import { randomInt } from "node:crypto";
 import type { Response } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import { syncDefaultExamPackages } from "../db/defaultPackages.js";
@@ -15,6 +15,7 @@ import {
   type OptionKey,
 } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
+import { getPackageAccessState } from "../services/packageAccess.js";
 import { logActivity } from "../utils/activityLog.js";
 
 const EXAM_GRACE_PERIOD_MINUTES = 1;
@@ -115,6 +116,36 @@ const normalizePositiveInteger = (value: unknown): number | null => {
 
 const getExamDurationMinutes = (questionCount: number): number => questionCount;
 
+const getAccessDeniedMessage = (
+  reason:
+    | "package_not_found"
+    | "not_purchased"
+    | "expired"
+    | "inactive"
+    | "session_limit_reached"
+    | "free_package"
+    | "purchased",
+  packageName: string | null,
+): string => {
+  if (reason === "expired") {
+    return `Akses untuk paket ${packageName ?? "ini"} sudah expired.`;
+  }
+
+  if (reason === "inactive") {
+    return `Akses untuk paket ${packageName ?? "ini"} sedang tidak aktif.`;
+  }
+
+  if (reason === "session_limit_reached") {
+    return `Batas sesi untuk paket ${packageName ?? "ini"} sudah tercapai.`;
+  }
+
+  if (reason === "not_purchased") {
+    return "Paket ini belum aktif di akun Anda. Selesaikan pembayaran terlebih dahulu.";
+  }
+
+  return "Exam package not found.";
+};
+
 const getPackageSummary = async (packageId: number | null) => {
   if (!packageId) {
     return null;
@@ -185,17 +216,19 @@ export const startExam = async (
       return;
     }
 
-    const [currentUser, selectedPackage] = await Promise.all([
+    const [currentUser, accessState] = await Promise.all([
       db
         .select({
           id: users.id,
-          isPremium: users.isPremium,
         })
         .from(users)
         .where(eq(users.id, userId))
         .limit(1)
         .then((rows) => rows[0] ?? null),
-      getPackageSummary(packageId),
+      getPackageAccessState({
+        userId,
+        packageId,
+      }),
     ]);
 
     if (!currentUser) {
@@ -211,7 +244,7 @@ export const startExam = async (
       return;
     }
 
-    if (!selectedPackage || !selectedPackage.isActive) {
+    if (accessState.reason === "package_not_found" || !accessState.package) {
       await logActivity({
         actorUserId: userId,
         actorRole: req.user.role,
@@ -225,21 +258,24 @@ export const startExam = async (
       return;
     }
 
-    if (selectedPackage.price > 0 && !currentUser.isPremium) {
+    const selectedPackage = accessState.package;
+
+    if (!accessState.allowed) {
       await logActivity({
         actorUserId: userId,
         actorRole: req.user.role,
         action: "EXAM_START",
         entity: "EXAM_SESSION",
         status: "failed",
-        message: "Exam start blocked: non-premium user.",
+        message: "Exam start blocked: package access denied.",
         metadata: {
           packageId,
           packageName: selectedPackage.name,
+          accessReason: accessState.reason,
         },
       });
       res.status(403).json({
-        message: "Premium account required. Complete payment before starting exam.",
+        message: getAccessDeniedMessage(accessState.reason, selectedPackage.name),
       });
       return;
     }
@@ -357,6 +393,13 @@ export const startExam = async (
 
     const shuffledQuestions = shuffleArray(activeQuestions);
     const durationMinutes = getExamDurationMinutes(questionLimit);
+    const [attemptAggregate] = await db
+      .select({ total: count() })
+      .from(examSessions)
+      .where(
+        and(eq(examSessions.userId, userId), eq(examSessions.packageId, selectedPackage.id)),
+      );
+    const attemptNumber = Number(attemptAggregate?.total ?? 0) + 1;
     const payloadMap: ExamPayloadMap = {
       generatedAt: new Date().toISOString(),
       durationMinutes,
@@ -371,6 +414,7 @@ export const startExam = async (
       .values({
         userId,
         packageId: selectedPackage.id,
+        attemptNumber,
         startTime: new Date(),
         status: "ongoing",
         payloadMap,
@@ -378,6 +422,7 @@ export const startExam = async (
       .returning({
         id: examSessions.id,
         packageId: examSessions.packageId,
+        attemptNumber: examSessions.attemptNumber,
         startTime: examSessions.startTime,
       });
 
@@ -386,6 +431,7 @@ export const startExam = async (
       sessionId: createdSession.id,
       package_id: createdSession.packageId,
       package_name: selectedPackage.name,
+      attempt_number: createdSession.attemptNumber,
       question_count: questionLimit,
       startTime: createdSession.startTime,
       durationMinutes,
@@ -552,6 +598,7 @@ const getOngoingSession = async (userId: number) => {
       id: examSessions.id,
       userId: examSessions.userId,
       packageId: examSessions.packageId,
+      attemptNumber: examSessions.attemptNumber,
       startTime: examSessions.startTime,
       payloadMap: examSessions.payloadMap,
     })
@@ -609,6 +656,7 @@ export const getCurrentExam = async (
       sessionId: ongoingSession.id,
       package_id: ongoingSession.packageId,
       package_name: questionPackage?.name ?? null,
+      attempt_number: ongoingSession.attemptNumber,
       question_count: questionPackage?.questionCount ?? getSessionQuestions(payloadMap).length,
       startTime: ongoingSession.startTime,
       durationMinutes: payloadMap.durationMinutes,
@@ -746,56 +794,7 @@ export const submitExam = async (
     const ongoingSession = await getOngoingSession(req.user.userId);
 
     if (!ongoingSession) {
-      const [latestCompleted] = await db
-        .select({
-          id: examSessions.id,
-          packageId: examSessions.packageId,
-          score: examSessions.score,
-        })
-        .from(examSessions)
-        .where(
-          and(
-            eq(examSessions.userId, req.user.userId),
-            eq(examSessions.status, "completed"),
-          ),
-        )
-        .orderBy(desc(examSessions.endTime), desc(examSessions.id))
-        .limit(1);
-
-      if (!latestCompleted) {
-        res.status(404).json({ message: "No ongoing exam session." });
-        return;
-      }
-
-      const [sessionForTotal] = await db
-        .select({
-          packageId: examSessions.packageId,
-          payloadMap: examSessions.payloadMap,
-        })
-        .from(examSessions)
-        .where(eq(examSessions.id, latestCompleted.id))
-        .limit(1);
-
-      const questionPackage = await getPackageSummary(
-        sessionForTotal?.packageId ?? latestCompleted.packageId,
-      );
-      const totalQuestions = sessionForTotal
-        ? getSessionQuestions(sessionForTotal.payloadMap as ExamPayloadMap).length
-        : 0;
-      const estimatedCorrectAnswers =
-        totalQuestions > 0 && latestCompleted.score !== null
-          ? Math.round((latestCompleted.score / 100) * totalQuestions)
-          : 0;
-
-      res.status(200).json({
-        sessionId: latestCompleted.id,
-        package_id: sessionForTotal?.packageId ?? latestCompleted.packageId ?? null,
-        package_name: questionPackage?.name ?? null,
-        status: "completed",
-        score: latestCompleted.score ?? 0,
-        totalQuestions,
-        correctAnswers: estimatedCorrectAnswers,
-      });
+      res.status(404).json({ message: "No ongoing exam session." });
       return;
     }
 
@@ -811,6 +810,7 @@ export const submitExam = async (
       sessionId: summary.sessionId,
       package_id: ongoingSession.packageId,
       package_name: questionPackage?.name ?? null,
+      attempt_number: ongoingSession.attemptNumber,
       status: summary.status,
       score: summary.score,
       totalQuestions: summary.totalQuestions,
@@ -873,6 +873,7 @@ export const getExamResult = async (
         id: examSessions.id,
         packageId: examSessions.packageId,
         packageName: examPackages.name,
+        attemptNumber: examSessions.attemptNumber,
         startTime: examSessions.startTime,
         endTime: examSessions.endTime,
         status: examSessions.status,
@@ -913,6 +914,7 @@ export const getExamResult = async (
       sessionId: session.id,
       package_id: session.packageId,
       package_name: session.packageName ?? null,
+      attempt_number: session.attemptNumber ?? null,
       status: session.status,
       score: session.score ?? computed.score,
       totalQuestions: computed.totalQuestions,
@@ -923,6 +925,55 @@ export const getExamResult = async (
     });
   } catch (error) {
     console.error("getExamResult error:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+export const listMyExamSessions = async (
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> => {
+  try {
+    if (!req.user) {
+      res.status(401).json({ message: "Unauthorized." });
+      return;
+    }
+
+    const rows = await db
+      .select({
+        id: examSessions.id,
+        packageId: examSessions.packageId,
+        packageName: examPackages.name,
+        attemptNumber: examSessions.attemptNumber,
+        status: examSessions.status,
+        score: examSessions.score,
+        startTime: examSessions.startTime,
+        endTime: examSessions.endTime,
+        payloadMap: examSessions.payloadMap,
+      })
+      .from(examSessions)
+      .leftJoin(examPackages, eq(examSessions.packageId, examPackages.id))
+      .where(eq(examSessions.userId, req.user.userId))
+      .orderBy(desc(examSessions.startTime), desc(examSessions.id));
+
+    res.status(200).json(
+      rows.map((row) => {
+        const payloadMap = row.payloadMap as ExamPayloadMap;
+        return {
+          session_id: row.id,
+          package_id: row.packageId,
+          package_name: row.packageName ?? null,
+          attempt_number: row.attemptNumber,
+          status: row.status,
+          score: row.score ?? 0,
+          total_questions: getSessionQuestions(payloadMap).length,
+          start_time: row.startTime,
+          end_time: row.endTime,
+        };
+      }),
+    );
+  } catch (error) {
+    console.error("listMyExamSessions error:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 };

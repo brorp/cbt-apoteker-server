@@ -5,8 +5,11 @@ import { eq } from "drizzle-orm";
 import { db } from "../config/db.js";
 import { users } from "../db/schema.js";
 import { logActivity } from "../utils/activityLog.js";
-
-type ExamPurpose = "ukai" | "cpns" | "pppk" | "other";
+import {
+  mapStoredExamPurposeToClient,
+  normalizeExamPurposeInput,
+  type ClientExamPurpose,
+} from "../utils/examPurpose.js";
 
 interface RegisterBody {
   name?: string;
@@ -14,7 +17,7 @@ interface RegisterBody {
   password?: string;
   education?: string;
   school_origin?: string;
-  exam_purpose?: ExamPurpose;
+  exam_purpose?: ClientExamPurpose;
   address?: string;
   phone?: string;
   target_score?: number;
@@ -32,11 +35,13 @@ const sanitizeUser = (user: {
   email: string;
   education: string;
   schoolOrigin: string;
-  examPurpose: ExamPurpose;
+  examPurpose: string;
   address: string;
   phone: string;
   targetScore: number | null;
   isPremium: boolean;
+  accountStatus?: "active" | "inactive";
+  statusNote?: string | null;
 }) => ({
   id: user.id,
   role: user.role,
@@ -44,11 +49,13 @@ const sanitizeUser = (user: {
   email: user.email,
   education: user.education,
   school_origin: user.schoolOrigin,
-  exam_purpose: user.examPurpose,
+  exam_purpose: mapStoredExamPurposeToClient(user.examPurpose),
   address: user.address,
   phone: user.phone,
   target_score: user.targetScore ?? 0,
   is_premium: user.isPremium,
+  account_status: user.accountStatus ?? "active",
+  status_note: user.statusNote ?? null,
 });
 
 const createAccessToken = (payload: {
@@ -72,9 +79,6 @@ const createAccessToken = (payload: {
   );
 };
 
-const isValidExamPurpose = (value: unknown): value is ExamPurpose =>
-  value === "ukai" || value === "cpns" || value === "pppk" || value === "other";
-
 export const register = async (req: Request, res: Response): Promise<void> => {
   try {
     const body = req.body as RegisterBody;
@@ -89,6 +93,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       phone,
       target_score,
     } = body;
+    const normalizedExamPurpose = normalizeExamPurposeInput(exam_purpose);
 
     if (
       !name ||
@@ -98,7 +103,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       !school_origin ||
       !address ||
       !phone ||
-      !isValidExamPurpose(exam_purpose)
+      !normalizedExamPurpose
     ) {
       res.status(400).json({
         message:
@@ -135,7 +140,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         password,
         education: education.trim(),
         schoolOrigin: school_origin.trim(),
-        examPurpose: exam_purpose,
+        examPurpose: normalizedExamPurpose,
         address: address.trim(),
         phone: phone.trim(),
         targetScore:
@@ -156,6 +161,8 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        accountStatus: users.accountStatus,
+        statusNote: users.statusNote,
       });
 
     const token = createAccessToken({
@@ -224,6 +231,8 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        accountStatus: users.accountStatus,
+        statusNote: users.statusNote,
       })
       .from(users)
       .where(eq(users.email, email))
@@ -238,6 +247,24 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         metadata: { email },
       });
       res.status(401).json({ message: "Invalid email or password." });
+      return;
+    }
+
+    if (user.accountStatus !== "active") {
+      await logActivity({
+        actorUserId: user.id,
+        actorRole: user.role,
+        action: "LOGIN",
+        entity: "AUTH",
+        entityId: user.id,
+        status: "failed",
+        message: "Login blocked: inactive account.",
+      });
+      res.status(403).json({
+        message:
+          user.statusNote?.trim() ||
+          "Akun Anda saat ini nonaktif. Silakan hubungi admin.",
+      });
       return;
     }
 

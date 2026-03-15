@@ -1,4 +1,4 @@
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import { examPackages } from "./schema.js";
@@ -9,6 +9,8 @@ export interface DefaultExamPackage {
   price: number;
   features: string;
   questionCount: number;
+  sessionLimit?: number | null;
+  validityDays?: number | null;
 }
 
 export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
@@ -18,6 +20,8 @@ export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
     price: 0,
     features: "50 soal, akses gratis, cocok untuk perkenalan platform",
     questionCount: 50,
+    sessionLimit: null,
+    validityDays: null,
   },
   {
     name: "Mini Try Out CBT Klinis (50 Soal)",
@@ -25,6 +29,8 @@ export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
     price: 49000,
     features: "50 soal klinis, pembahasan lengkap, simulasi cepat",
     questionCount: 50,
+    sessionLimit: null,
+    validityDays: null,
   },
   {
     name: "Mini Try Out CBT Industri (50 Soal)",
@@ -32,6 +38,8 @@ export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
     price: 49000,
     features: "50 soal industri, pembahasan lengkap, simulasi cepat",
     questionCount: 50,
+    sessionLimit: null,
+    validityDays: null,
   },
   {
     name: "Try Out CBT Klinis (100 Soal)",
@@ -39,6 +47,8 @@ export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
     price: 99000,
     features: "100 soal klinis, pembahasan lengkap, analisis hasil",
     questionCount: 100,
+    sessionLimit: null,
+    validityDays: null,
   },
   {
     name: "Try Out CBT Industri (100 Soal)",
@@ -46,96 +56,24 @@ export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
     price: 99000,
     features: "100 soal industri, pembahasan lengkap, analisis hasil",
     questionCount: 100,
+    sessionLimit: null,
+    validityDays: null,
   },
 ];
 
 export const syncDefaultExamPackages = async (): Promise<void> => {
-  const now = new Date();
-  const defaultNames = new Set(DEFAULT_EXAM_PACKAGES.map((item) => item.name));
   const existingRows = await db
     .select({
       id: examPackages.id,
       name: examPackages.name,
-      description: examPackages.description,
-      price: examPackages.price,
-      features: examPackages.features,
-      questionCount: examPackages.questionCount,
-      isActive: examPackages.isActive,
     })
     .from(examPackages)
     .orderBy(asc(examPackages.id));
 
-  const rowsByName = new Map<
-    string,
-    Array<{
-      id: number;
-      name: string;
-      description: string;
-      price: number;
-      features: string;
-      questionCount: number;
-      isActive: boolean;
-    }>
-  >();
-  for (const row of existingRows) {
-    const matches = rowsByName.get(row.name) ?? [];
-    matches.push(row);
-    rowsByName.set(row.name, matches);
-  }
-
-  const rowsToDeactivate = existingRows
-    .filter((row) => !defaultNames.has(row.name) && row.isActive)
-    .map((row) => row.id);
-
-  if (rowsToDeactivate.length > 0) {
-    await db
-      .update(examPackages)
-      .set({
-        isActive: false,
-        updatedAt: now,
-      })
-      .where(inArray(examPackages.id, rowsToDeactivate));
-  }
+  const existingNames = new Set(existingRows.map((item) => item.name));
 
   for (const defaultPackage of DEFAULT_EXAM_PACKAGES) {
-    const matches = rowsByName.get(defaultPackage.name) ?? [];
-    const [primary, ...duplicates] = matches;
-
-    if (primary) {
-      const hasChanged =
-        primary.description !== defaultPackage.description ||
-        primary.price !== defaultPackage.price ||
-        primary.features !== defaultPackage.features ||
-        primary.questionCount !== defaultPackage.questionCount ||
-        primary.isActive !== true;
-
-      if (hasChanged) {
-        await db
-          .update(examPackages)
-          .set({
-            description: defaultPackage.description,
-            price: defaultPackage.price,
-            features: defaultPackage.features,
-            questionCount: defaultPackage.questionCount,
-            isActive: true,
-            updatedAt: now,
-          })
-          .where(eq(examPackages.id, primary.id));
-      }
-
-      const duplicateIdsToDeactivate = duplicates
-        .filter((item) => item.isActive)
-        .map((item) => item.id);
-      if (duplicateIdsToDeactivate.length > 0) {
-        await db
-          .update(examPackages)
-          .set({
-            isActive: false,
-            updatedAt: now,
-          })
-          .where(inArray(examPackages.id, duplicateIdsToDeactivate));
-      }
-
+    if (existingNames.has(defaultPackage.name)) {
       continue;
     }
 
@@ -145,6 +83,8 @@ export const syncDefaultExamPackages = async (): Promise<void> => {
       price: defaultPackage.price,
       features: defaultPackage.features,
       questionCount: defaultPackage.questionCount,
+      sessionLimit: defaultPackage.sessionLimit ?? null,
+      validityDays: defaultPackage.validityDays ?? null,
       isActive: true,
     });
   }

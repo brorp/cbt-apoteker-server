@@ -1,5 +1,5 @@
 import type { Response } from "express";
-import { desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, or } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import { syncDefaultExamPackages } from "../db/defaultPackages.js";
@@ -14,6 +14,10 @@ import {
 } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import { logActivity } from "../utils/activityLog.js";
+import {
+  formatExamPurposeLabel,
+  mapStoredExamPurposeToClient,
+} from "../utils/examPurpose.js";
 import {
   DocxQuestionImportError,
   parseQuestionTemplateDocx,
@@ -183,6 +187,8 @@ export const listUsers = async (
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        accountStatus: users.accountStatus,
+        statusNote: users.statusNote,
         createdAt: users.createdAt,
       })
       .from(users)
@@ -196,11 +202,14 @@ export const listUsers = async (
         email: row.email,
         education: row.education,
         school_origin: row.schoolOrigin,
-        exam_purpose: row.examPurpose,
+        exam_purpose: mapStoredExamPurposeToClient(row.examPurpose),
+        exam_purpose_label: formatExamPurposeLabel(row.examPurpose),
         address: row.address,
         phone: row.phone,
         target_score: row.targetScore ?? 0,
         is_premium: row.isPremium,
+        account_status: row.accountStatus,
+        status_note: row.statusNote ?? null,
         created_at: row.createdAt,
       })),
     );
@@ -347,6 +356,36 @@ export const listQuestions = async (
 ): Promise<void> => {
   try {
     await syncDefaultExamPackages();
+    const packageId = normalizePositiveInteger(req.query.package_id ?? req.query.packageId);
+    const isActive =
+      req.query.is_active !== undefined
+        ? normalizeBoolean(req.query.is_active)
+        : null;
+    const search =
+      typeof req.query.search === "string" ? req.query.search.trim() : "";
+
+    if (req.query.is_active !== undefined && isActive === null) {
+      res.status(400).json({ message: "Invalid is_active filter." });
+      return;
+    }
+
+    const conditions = [];
+    if (packageId) {
+      conditions.push(eq(questions.packageId, packageId));
+    }
+    if (isActive !== null) {
+      conditions.push(eq(questions.isActive, isActive));
+    }
+    if (search.length > 0) {
+      const pattern = `%${search}%`;
+      conditions.push(
+        or(
+          ilike(questions.questionText, pattern),
+          ilike(questions.explanation, pattern),
+          ilike(examPackages.name, pattern),
+        ),
+      );
+    }
 
     const rows = await db
       .select({
@@ -366,6 +405,7 @@ export const listQuestions = async (
       })
       .from(questions)
       .leftJoin(examPackages, eq(questions.packageId, examPackages.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(questions.id));
 
     res.status(200).json(rows.map(toQuestionResponse));
@@ -388,6 +428,89 @@ export const listQuestions = async (
       status: "failed",
       message: "Failed to fetch question bank.",
     });
+    res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+export const updateUserStatus = async (
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(400).json({ message: "Invalid user id." });
+      return;
+    }
+
+    const body = req.body as {
+      account_status?: unknown;
+      accountStatus?: unknown;
+      status_note?: unknown;
+      statusNote?: unknown;
+    };
+
+    const accountStatusValue = body.account_status ?? body.accountStatus;
+    if (accountStatusValue !== "active" && accountStatusValue !== "inactive") {
+      res.status(400).json({ message: "Invalid account_status." });
+      return;
+    }
+
+    const statusNoteRaw = body.status_note ?? body.statusNote;
+    const statusNote =
+      typeof statusNoteRaw === "string" && statusNoteRaw.trim().length > 0
+        ? statusNoteRaw.trim()
+        : null;
+
+    const [updated] = await db
+      .update(users)
+      .set({
+        accountStatus: accountStatusValue,
+        statusNote,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, id))
+      .returning({
+        id: users.id,
+        role: users.role,
+        name: users.name,
+        email: users.email,
+        education: users.education,
+        schoolOrigin: users.schoolOrigin,
+        examPurpose: users.examPurpose,
+        address: users.address,
+        phone: users.phone,
+        targetScore: users.targetScore,
+        isPremium: users.isPremium,
+        accountStatus: users.accountStatus,
+        statusNote: users.statusNote,
+        createdAt: users.createdAt,
+      });
+
+    if (!updated) {
+      res.status(404).json({ message: "User not found." });
+      return;
+    }
+
+    res.status(200).json({
+      id: updated.id,
+      role: updated.role,
+      name: updated.name,
+      email: updated.email,
+      education: updated.education,
+      school_origin: updated.schoolOrigin,
+      exam_purpose: mapStoredExamPurposeToClient(updated.examPurpose),
+      exam_purpose_label: formatExamPurposeLabel(updated.examPurpose),
+      address: updated.address,
+      phone: updated.phone,
+      target_score: updated.targetScore ?? 0,
+      is_premium: updated.isPremium,
+      account_status: updated.accountStatus,
+      status_note: updated.statusNote ?? null,
+      created_at: updated.createdAt,
+    });
+  } catch (error) {
+    console.error("updateUserStatus error:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 };

@@ -5,6 +5,7 @@ import { db } from "../config/db.js";
 import { users } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import { logActivity } from "../utils/activityLog.js";
+import { mapStoredExamPurposeToClient } from "../utils/examPurpose.js";
 
 export const profile = async (
   req: AuthenticatedRequest,
@@ -35,6 +36,8 @@ export const profile = async (
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        accountStatus: users.accountStatus,
+        statusNote: users.statusNote,
       })
       .from(users)
       .where(eq(users.id, req.user.userId))
@@ -61,11 +64,13 @@ export const profile = async (
       email: user.email,
       education: user.education,
       school_origin: user.schoolOrigin,
-      exam_purpose: user.examPurpose,
+      exam_purpose: mapStoredExamPurposeToClient(user.examPurpose),
       address: user.address,
       phone: user.phone,
       target_score: user.targetScore ?? 0,
       is_premium: user.isPremium,
+      account_status: user.accountStatus,
+      status_note: user.statusNote ?? null,
     });
 
     await logActivity({
