@@ -29,7 +29,64 @@ Status: `200 OK`
 
 ---
 
-### 2) Start Exam
+### 2) Send Registration Email OTP
+- Method: `POST`
+- Path: `/api/auth/email-otp/send`
+- Auth: Tidak perlu
+- Body:
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+#### Behavior
+- Menghasilkan OTP 4 digit angka.
+- OTP berlaku `5 menit`.
+- Request resend yang terlalu cepat akan ditolak sementara.
+- OTP disimpan dalam bentuk hash di database.
+- Jika email sudah terdaftar, request akan ditolak `409`.
+
+#### Success Response
+Status: `200 OK`
+
+```json
+{
+  "message": "OTP email sent successfully.",
+  "request_id": 12,
+  "expires_at": "2026-03-16T10:15:00.000Z",
+  "retry_after_seconds": 60,
+  "provider": "resend",
+  "delivered": true,
+  "warning": null
+}
+```
+
+#### Error Responses
+- `400 Bad Request`
+  - `{"message":"Email is required."}`
+  - `{"message":"Invalid email address."}`
+- `409 Conflict`
+  - `{"message":"Email is already registered."}`
+- `429 Too Many Requests`
+  - `{"message":"OTP was sent recently. Try again in 42 seconds.","retry_after_seconds":42}`
+- `500 Internal Server Error`
+  - `{"message":"EMAIL_OTP_SECRET or JWT_SECRET is not configured."}`
+- `502 Bad Gateway`
+  - Jika provider email gagal mengirim
+
+#### cURL Example
+
+```bash
+curl -X POST http://localhost:3001/api/auth/email-otp/send \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com"}'
+```
+
+---
+
+### 3) Start Exam
 - Method: `POST`
 - Path: `/api/exam/start`
 - Auth: Wajib (`Bearer token`)
@@ -149,7 +206,7 @@ curl -X POST http://localhost:3001/api/exam/start \
 
 ---
 
-### 3) Import Question Bank From `.docx`
+### 4) Import Question Bank From `.docx`
 - Method: `POST`
 - Path: `/api/admin/questions/import`
 - Auth: Wajib (`Bearer token` admin)
@@ -212,7 +269,7 @@ curl -X POST http://localhost:3001/api/admin/questions/import \
 
 ---
 
-### 4) Get Exam Result
+### 5) Get Exam Result
 - Method: `GET`
 - Path: `/api/exam/result/:sessionId`
 - Auth: Wajib

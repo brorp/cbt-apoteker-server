@@ -64,6 +64,9 @@ export const activityStatusEnum = pgEnum("activity_status", [
   "success",
   "failed",
 ]);
+export const emailOtpPurposeEnum = pgEnum("email_otp_purpose", [
+  "registration",
+]);
 
 export type OptionKey = "a" | "b" | "c" | "d" | "e";
 
@@ -125,6 +128,21 @@ export const activityLogs = pgTable("activity_logs", {
   message: text("message"),
   metadata: jsonb("metadata").$type<ActivityMeta>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const emailOtps = pgTable("email_otps", {
+  id: serial("id").primaryKey(),
+  email: varchar("email", { length: 255 }).notNull(),
+  purpose: emailOtpPurposeEnum("purpose").notNull().default("registration"),
+  otpHash: varchar("otp_hash", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });
