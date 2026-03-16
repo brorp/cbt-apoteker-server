@@ -143,7 +143,7 @@ export const buildRegistrationOtpEmail = (input: { otpCode: string }) => ({
     "Terima kasih telah melakukan registrasi.",
     `Gunakan kode OTP berikut untuk menyelesaikan proses verifikasi akun Anda: ${input.otpCode}`,
     "",
-    "Kode OTP ini berlaku selama 5 menit.",
+    "Kode OTP ini berlaku selama 60 detik.",
     "Jika Anda tidak merasa melakukan registrasi, silakan abaikan email ini.",
     "",
     "Email ini dikirim otomatis, mohon tidak membalas email ini.",
@@ -196,7 +196,7 @@ export const buildRegistrationOtpEmail = (input: { otpCode: string }) => ({
                                           <tr>
                                             <td align="center">
                                               <p style="font-size:14px;color:#666;">
-                                                Kode OTP ini berlaku selama <b>5 menit</b>.
+                                                Kode OTP ini berlaku selama <b>60 detik</b>.
                                               </p>
                                               <p style="font-size:13px;color:#999;margin-top:25px;">
                                                 Jika Anda tidak merasa melakukan registrasi, silakan abaikan email ini.

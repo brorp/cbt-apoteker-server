@@ -43,7 +43,7 @@ Status: `200 OK`
 
 #### Behavior
 - Menghasilkan OTP 4 digit angka.
-- OTP berlaku `5 menit`.
+- OTP berlaku `60 detik`.
 - Request resend yang terlalu cepat akan ditolak sementara.
 - OTP disimpan dalam bentuk hash di database.
 - Jika email sudah terdaftar, request akan ditolak `409`.
@@ -86,7 +86,122 @@ curl -X POST http://localhost:3001/api/auth/email-otp/send \
 
 ---
 
-### 3) Start Exam
+### 3) Verify Registration Email OTP
+- Method: `POST`
+- Path: `/api/auth/email-otp/verify`
+- Auth: Tidak perlu
+- Body:
+
+```json
+{
+  "email": "user@example.com",
+  "otp": "1234"
+}
+```
+
+#### Success Response
+Status: `200 OK`
+
+```json
+{
+  "message": "OTP verified successfully.",
+  "email": "user@example.com",
+  "registration_token": "<REGISTRATION_TOKEN>",
+  "registration_token_expires_at": "2026-03-16T10:45:00.000Z",
+  "next_step": "complete_profile"
+}
+```
+
+---
+
+### 4) Continue With Google
+- Method: `POST`
+- Path: `/api/auth/google/continue`
+- Auth: Tidak perlu
+- Body:
+
+```json
+{
+  "id_token": "<GOOGLE_ID_TOKEN>"
+}
+```
+
+#### Success Response For Existing User
+Status: `200 OK`
+
+```json
+{
+  "message": "Google sign-in successful.",
+  "next_step": "login",
+  "token": "<ACCESS_TOKEN>",
+  "user": {
+    "id": 1,
+    "role": "user",
+    "name": "Jane Doe",
+    "email": "user@example.com"
+  }
+}
+```
+
+#### Success Response For New User
+Status: `200 OK`
+
+```json
+{
+  "message": "Google account verified. Complete your profile to finish registration.",
+  "next_step": "complete_profile",
+  "registration_token": "<REGISTRATION_TOKEN>",
+  "registration_token_expires_at": "2026-03-16T10:45:00.000Z",
+  "registration": {
+    "email": "user@example.com",
+    "name": "Jane Doe",
+    "picture_url": "https://...",
+    "auth_source": "google"
+  }
+}
+```
+
+---
+
+### 5) Complete Registration
+- Method: `POST`
+- Path: `/api/auth/register`
+- Auth: Tidak perlu
+- Body:
+
+```json
+{
+  "registration_token": "<REGISTRATION_TOKEN>",
+  "name": "Jane Doe",
+  "password": "secret123",
+  "education": "S1 Farmasi",
+  "school_origin": "Universitas Contoh",
+  "exam_purpose": "persiapan_ukai",
+  "address": "Jakarta",
+  "phone": "08123456789",
+  "target_score": 80
+}
+```
+
+#### Success Response
+Status: `201 Created`
+
+```json
+{
+  "message": "Registration successful.",
+  "token": "<ACCESS_TOKEN>",
+  "user": {
+    "id": 1,
+    "role": "user",
+    "name": "Jane Doe",
+    "email": "user@example.com"
+  }
+}
+```
+
+---
+
+### 6) Start Exam
 - Method: `POST`
 - Path: `/api/exam/start`
 - Auth: Wajib (`Bearer token`)

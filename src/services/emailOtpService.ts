@@ -4,12 +4,13 @@ import { and, desc, eq, gt, isNull } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import { emailOtps, users } from "../db/schema.js";
+import { issueRegistrationFlowToken } from "./authFlowTokenService.js";
 import {
   buildRegistrationOtpEmail,
   sendEmail,
 } from "./emailService.js";
 
-const OTP_TTL_MINUTES = 5;
+const OTP_TTL_SECONDS = 60;
 const RESEND_COOLDOWN_SECONDS = 60;
 const EMAIL_OTP_PURPOSE = "registration" as const;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -102,7 +103,7 @@ export const issueRegistrationEmailOtp = async (emailInput: string) => {
   }
 
   const otpCode = generateOtpCode();
-  const expiresAt = new Date(Date.now() + OTP_TTL_MINUTES * 60 * 1000);
+  const expiresAt = new Date(Date.now() + OTP_TTL_SECONDS * 1000);
   const consumedAt = new Date();
 
   await db
@@ -166,5 +167,100 @@ export const issueRegistrationEmailOtp = async (emailInput: string) => {
     delivered: emailResult.delivered,
     messageId: emailResult.messageId ?? null,
     warning: emailResult.delivered ? null : emailResult.error ?? null,
+  };
+};
+
+export const verifyRegistrationEmailOtp = async (
+  emailInput: string,
+  otpCodeInput: string,
+) => {
+  const email = normalizeEmail(emailInput);
+  const otpCode = otpCodeInput.trim();
+
+  if (!EMAIL_REGEX.test(email)) {
+    throw new EmailOtpServiceError("Invalid email address.", 400);
+  }
+
+  if (!/^\d{4}$/.test(otpCode)) {
+    throw new EmailOtpServiceError("OTP must be a 4 digit code.", 400);
+  }
+
+  const [existingUser, latestOtp] = await Promise.all([
+    db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({
+        id: emailOtps.id,
+        otpHash: emailOtps.otpHash,
+        expiresAt: emailOtps.expiresAt,
+      })
+      .from(emailOtps)
+      .where(
+        and(
+          eq(emailOtps.email, email),
+          eq(emailOtps.purpose, EMAIL_OTP_PURPOSE),
+          isNull(emailOtps.consumedAt),
+        ),
+      )
+      .orderBy(desc(emailOtps.createdAt), desc(emailOtps.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+  ]);
+
+  if (existingUser) {
+    throw new EmailOtpServiceError("Email is already registered.", 409);
+  }
+
+  if (!latestOtp) {
+    throw new EmailOtpServiceError(
+      "OTP not found. Please request a new code.",
+      404,
+    );
+  }
+
+  const now = new Date();
+
+  if (latestOtp.expiresAt.getTime() <= now.getTime()) {
+    await db
+      .update(emailOtps)
+      .set({
+        consumedAt: now,
+        updatedAt: now,
+      })
+      .where(eq(emailOtps.id, latestOtp.id));
+
+    throw new EmailOtpServiceError(
+      "OTP has expired. Please request a new code.",
+      410,
+      { retry_after_seconds: 0 },
+    );
+  }
+
+  if (latestOtp.otpHash !== hashOtpCode(email, otpCode)) {
+    throw new EmailOtpServiceError("OTP is invalid.", 400);
+  }
+
+  await db
+    .update(emailOtps)
+    .set({
+      consumedAt: now,
+      updatedAt: now,
+    })
+    .where(eq(emailOtps.id, latestOtp.id));
+
+  const registrationFlow = issueRegistrationFlowToken({
+    method: "email",
+    email,
+  });
+
+  return {
+    email,
+    requestId: latestOtp.id,
+    registrationToken: registrationFlow.token,
+    registrationTokenExpiresAt: registrationFlow.expiresAt,
   };
 };
