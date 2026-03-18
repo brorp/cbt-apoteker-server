@@ -293,6 +293,7 @@ export const examSessions = pgTable("exam_sessions", {
   }),
   attemptNumber: integer("attempt_number").notNull().default(1),
   startTime: timestamp("start_time", { withTimezone: true }).notNull(),
+  durationMinutes: integer("duration_minutes"),
   endTime: timestamp("end_time", { withTimezone: true }),
   status: examSessionStatusEnum("status").notNull().default("ongoing"),
   score: integer("score"),

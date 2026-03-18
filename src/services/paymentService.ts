@@ -28,6 +28,13 @@ import {
   mapMidtransStatusToTransactionStatus,
 } from "./midtransService.js";
 import {
+  PaymentHubHttpError,
+  buildSyntheticMidtransPayloadFromPaymentHub,
+  createPaymentHubTransaction,
+  getPaymentHubTransactionStatus,
+  isPaymentHubMode,
+} from "./paymentHubService.js";
+import {
   deactivatePackageAccessForTransaction,
   grantPackageAccessForTransaction,
 } from "./packageAccess.js";
@@ -648,66 +655,152 @@ export const createTransactionOrder = async (input: {
     })
     .returning({ id: transactions.id });
 
+  const isHubMode = isPaymentHubMode();
+
   try {
-    const snap = await createMidtransSnapTransaction({
-      orderCode,
-      grossAmount: selectedPackage.price,
-      paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
-      item: {
-        id: selectedPackage.id,
-        name: selectedPackage.name,
-        price: selectedPackage.price,
-        description: selectedPackage.description,
-      },
-      customer: {
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-      },
-    });
-
-    await db
-      .update(transactions)
-      .set({
-        provider: "midtrans",
-        status: "pending",
+    if (isHubMode) {
+      const hub = await createPaymentHubTransaction({
+        transactionId: created.id,
+        orderCode,
+        grossAmount: selectedPackage.price,
         paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
-        snapToken: snap.token,
-        snapRedirectUrl: snap.redirectUrl,
-        paymentGatewayUrl: snap.redirectUrl,
-        midtransOrderId: orderCode,
-        rawResponse: snap.raw,
-        expiresAt,
-        lastStatusAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(transactions.id, created.id));
+        item: {
+          id: selectedPackage.id,
+          name: selectedPackage.name,
+          price: selectedPackage.price,
+          description: selectedPackage.description,
+        },
+        customer: {
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+        },
+      });
 
-    await recordPaymentEvent({
-      transactionId: created.id,
-      source: "create",
-      eventType: "snap_transaction_created",
-      payload: {
-        order_code: orderCode,
-        payment_method: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
-        snap: snap.raw,
-      },
-    });
+      const syntheticPayload = buildSyntheticMidtransPayloadFromPaymentHub(
+        {
+          external_reference: orderCode,
+          transaction_status: hub.transactionStatus,
+          provider_transaction_status: hub.providerTransactionStatus,
+          payment_type: hub.paymentType,
+          fraud_status: hub.fraudStatus,
+          midtrans_transaction_id: hub.midtransTransactionId,
+          gross_amount: hub.grossAmount,
+          provider_status_code: hub.providerStatusCode,
+          provider_status_message: hub.providerStatusMessage,
+          expired_at: hub.expiredAt,
+        },
+        orderCode,
+      );
+
+      await db
+        .update(transactions)
+        .set({
+          provider: "midtrans",
+          status: mapMidtransStatusToTransactionStatus(syntheticPayload),
+          paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
+          paymentType: hub.paymentType ?? paymentMethod ?? DEFAULT_PAYMENT_METHOD,
+          snapToken: hub.snapToken,
+          snapRedirectUrl: hub.snapRedirectUrl,
+          paymentGatewayUrl: hub.snapRedirectUrl ?? "",
+          midtransTransactionId: hub.midtransTransactionId,
+          midtransOrderId: hub.orderId,
+          midtransTransactionStatus:
+            typeof syntheticPayload.transaction_status === "string"
+              ? syntheticPayload.transaction_status
+              : null,
+          fraudStatus: hub.fraudStatus,
+          statusCode:
+            typeof syntheticPayload.status_code === "string"
+              ? syntheticPayload.status_code
+              : null,
+          statusMessage:
+            hub.providerStatusMessage ?? "Payment created via payment hub.",
+          rawResponse: hub.raw,
+          expiresAt: parseMaybeDate(syntheticPayload.expiry_time) ?? expiresAt,
+          lastStatusAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(transactions.id, created.id));
+
+      await recordPaymentEvent({
+        transactionId: created.id,
+        source: "create",
+        eventType: "payment_hub_transaction_created",
+        payload: {
+          order_code: orderCode,
+          payment_method: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
+          payment_hub: hub.raw,
+        },
+      });
+    } else {
+      const snap = await createMidtransSnapTransaction({
+        orderCode,
+        grossAmount: selectedPackage.price,
+        paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
+        item: {
+          id: selectedPackage.id,
+          name: selectedPackage.name,
+          price: selectedPackage.price,
+          description: selectedPackage.description,
+        },
+        customer: {
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+        },
+      });
+
+      await db
+        .update(transactions)
+        .set({
+          provider: "midtrans",
+          status: "pending",
+          paymentMethod: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
+          snapToken: snap.token,
+          snapRedirectUrl: snap.redirectUrl,
+          paymentGatewayUrl: snap.redirectUrl,
+          midtransOrderId: orderCode,
+          rawResponse: snap.raw,
+          expiresAt,
+          lastStatusAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(transactions.id, created.id));
+
+      await recordPaymentEvent({
+        transactionId: created.id,
+        source: "create",
+        eventType: "snap_transaction_created",
+        payload: {
+          order_code: orderCode,
+          payment_method: paymentMethod ?? DEFAULT_PAYMENT_METHOD,
+          snap: snap.raw,
+        },
+      });
+    }
   } catch (error) {
+    const upstreamPayload =
+      (error instanceof MidtransHttpError || error instanceof PaymentHubHttpError) &&
+      error.payload &&
+      typeof error.payload === "object"
+        ? (error.payload as Record<string, unknown>)
+        : null;
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : isHubMode
+          ? "Failed to create payment hub transaction."
+          : "Failed to create Midtrans transaction.";
+
     await db
       .update(transactions)
       .set({
         status: "failed",
-        statusMessage:
-          error instanceof Error
-            ? error.message
-            : "Failed to create Midtrans transaction.",
-        rawResponse:
-          error instanceof MidtransHttpError && error.payload && typeof error.payload === "object"
-            ? (error.payload as Record<string, unknown>)
-            : {
-                error: error instanceof Error ? error.message : "Unknown Midtrans error.",
-              },
+        statusMessage: errorMessage,
+        rawResponse: upstreamPayload ?? {
+          error: errorMessage,
+        },
         updatedAt: new Date(),
       })
       .where(eq(transactions.id, created.id));
@@ -715,22 +808,20 @@ export const createTransactionOrder = async (input: {
     await recordPaymentEvent({
       transactionId: created.id,
       source: "create",
-      eventType: "snap_transaction_failed",
+      eventType: isHubMode
+        ? "payment_hub_transaction_failed"
+        : "snap_transaction_failed",
       payload: {
-        error:
-          error instanceof Error ? error.message : "Unknown Midtrans error.",
-        detail:
-          error instanceof MidtransHttpError && error.payload && typeof error.payload === "object"
-            ? error.payload
-            : null,
+        error: errorMessage,
+        detail: upstreamPayload,
       },
     });
 
     throw new PaymentServiceError(
-      error instanceof Error
-        ? error.message
-        : "Failed to create Midtrans transaction.",
-      error instanceof MidtransHttpError ? 502 : 500,
+      errorMessage,
+      error instanceof MidtransHttpError || error instanceof PaymentHubHttpError
+        ? 502
+        : 500,
     );
   }
 
@@ -812,6 +903,15 @@ export const applyMidtransNotification = async (
   });
 };
 
+export const applyPaymentHubNotification = async (
+  payload: Record<string, unknown>,
+  source: string,
+) => {
+  const syntheticPayload = buildSyntheticMidtransPayloadFromPaymentHub(payload);
+
+  return applyMidtransNotification(syntheticPayload, source);
+};
+
 export const syncTransactionStatusFromMidtrans = async (input: {
   transactionId: number;
   requesterUserId?: number;
@@ -840,23 +940,41 @@ export const syncTransactionStatusFromMidtrans = async (input: {
     return detail;
   }
 
+  const hubMode = isPaymentHubMode();
+  if (hubMode && !current.midtransOrderId) {
+    throw new PaymentServiceError("Payment hub order reference is missing.", 404);
+  }
+
   try {
-    const payload = await getMidtransTransactionStatus(current.orderCode);
+    const payload = hubMode
+      ? buildSyntheticMidtransPayloadFromPaymentHub(
+          await getPaymentHubTransactionStatus(current.midtransOrderId as string, {
+            refresh: true,
+          }),
+          current.orderCode,
+        )
+      : await getMidtransTransactionStatus(current.orderCode);
+
     return updateTransactionFromMidtransPayload({
       transactionId: current.id,
       payload,
       source: input.source,
     });
   } catch (error) {
-    if (error instanceof MidtransHttpError && error.status === 404) {
+    if (
+      (error instanceof MidtransHttpError || error instanceof PaymentHubHttpError) &&
+      error.status === 404
+    ) {
       await recordPaymentEvent({
         transactionId: current.id,
         source: input.source,
         eventType: "status_check_not_found",
         payload: {
           order_code: current.orderCode,
-          message:
-            "Midtrans status endpoint returned 404. This can happen before a payment method is selected.",
+          upstream_order_id: hubMode ? current.midtransOrderId : current.orderCode,
+          message: hubMode
+            ? "Payment hub status endpoint returned 404."
+            : "Midtrans status endpoint returned 404. This can happen before a payment method is selected.",
         },
       });
 
@@ -875,8 +993,12 @@ export const syncTransactionStatusFromMidtrans = async (input: {
     throw new PaymentServiceError(
       error instanceof Error
         ? error.message
-        : "Failed to sync transaction status.",
-      error instanceof MidtransHttpError ? 502 : 500,
+        : hubMode
+          ? "Failed to sync transaction status from payment hub."
+          : "Failed to sync transaction status.",
+      error instanceof MidtransHttpError || error instanceof PaymentHubHttpError
+        ? 502
+        : 500,
     );
   }
 };

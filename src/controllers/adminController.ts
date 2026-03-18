@@ -10,6 +10,7 @@ import {
   questions,
   transactions,
   users,
+  type ExamPayloadMap,
   type OptionKey,
 } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
@@ -304,10 +305,13 @@ export const listExamResults = async (
         userName: users.name,
         packageId: examSessions.packageId,
         packageName: examPackages.name,
+        attemptNumber: examSessions.attemptNumber,
         status: examSessions.status,
         score: examSessions.score,
+        durationMinutes: examSessions.durationMinutes,
         startTime: examSessions.startTime,
         endTime: examSessions.endTime,
+        payloadMap: examSessions.payloadMap,
       })
       .from(examSessions)
       .leftJoin(users, eq(examSessions.userId, users.id))
@@ -315,17 +319,27 @@ export const listExamResults = async (
       .orderBy(desc(examSessions.startTime));
 
     res.status(200).json(
-      rows.map((row) => ({
-        session_id: row.sessionId,
-        user_id: row.userId,
-        user_name: row.userName ?? "Unknown",
-        package_id: row.packageId,
-        package_name: row.packageName ?? null,
-        status: row.status,
-        score: row.score ?? 0,
-        start_time: row.startTime,
-        end_time: row.endTime,
-      })),
+      rows.map((row) => {
+        const payloadMap = row.payloadMap as ExamPayloadMap;
+        const totalQuestions = Array.isArray(payloadMap?.questions)
+          ? payloadMap.questions.length
+          : 0;
+
+        return {
+          session_id: row.sessionId,
+          user_id: row.userId,
+          user_name: row.userName ?? "Unknown",
+          package_id: row.packageId,
+          package_name: row.packageName ?? null,
+          attempt_number: row.attemptNumber,
+          status: row.status,
+          score: row.score ?? 0,
+          total_questions: totalQuestions,
+          duration_minutes: row.durationMinutes ?? totalQuestions,
+          start_time: row.startTime,
+          end_time: row.endTime,
+        };
+      }),
     );
     await logActivity({
       actorUserId: req.user?.userId ?? null,

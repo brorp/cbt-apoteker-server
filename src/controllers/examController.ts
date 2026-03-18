@@ -116,6 +116,29 @@ const normalizePositiveInteger = (value: unknown): number | null => {
 
 const getExamDurationMinutes = (questionCount: number): number => questionCount;
 
+const resolveSessionDurationMinutes = (
+  payloadMap: ExamPayloadMap,
+  storedDurationMinutes: number | null | undefined,
+): number => {
+  if (
+    typeof storedDurationMinutes === "number" &&
+    Number.isInteger(storedDurationMinutes) &&
+    storedDurationMinutes > 0
+  ) {
+    return storedDurationMinutes;
+  }
+
+  if (
+    typeof payloadMap.durationMinutes === "number" &&
+    Number.isInteger(payloadMap.durationMinutes) &&
+    payloadMap.durationMinutes > 0
+  ) {
+    return payloadMap.durationMinutes;
+  }
+
+  return getExamDurationMinutes(getSessionQuestions(payloadMap).length);
+};
+
 const getAccessDeniedMessage = (
   reason:
     | "package_not_found"
@@ -285,6 +308,7 @@ export const startExam = async (
         id: examSessions.id,
         packageId: examSessions.packageId,
         startTime: examSessions.startTime,
+        durationMinutes: examSessions.durationMinutes,
         status: examSessions.status,
         payloadMap: examSessions.payloadMap,
       })
@@ -298,17 +322,22 @@ export const startExam = async (
     // Idempotent behavior: if an ongoing session exists, return same map unless expired.
     if (ongoingSession) {
       const payloadMap = ongoingSession.payloadMap as ExamPayloadMap;
+      const durationMinutes = resolveSessionDurationMinutes(
+        payloadMap,
+        ongoingSession.durationMinutes,
+      );
 
       if (
         isSubmitWindowExpired(
           ongoingSession.startTime,
-          payloadMap.durationMinutes,
+          durationMinutes,
         )
       ) {
         await completeSession({
           sessionId: ongoingSession.id,
           userId: req.user.userId,
           startTime: ongoingSession.startTime,
+          durationMinutes,
           payloadMap,
         });
       } else {
@@ -331,7 +360,7 @@ export const startExam = async (
           package_name: selectedPackage.name,
           question_count: selectedPackage.questionCount,
           startTime: ongoingSession.startTime,
-          durationMinutes: payloadMap.durationMinutes,
+          durationMinutes,
           gracePeriodMinutes: payloadMap.gracePeriodMinutes,
           questions: toPublicQuestions(payloadMap),
         });
@@ -416,6 +445,7 @@ export const startExam = async (
         packageId: selectedPackage.id,
         attemptNumber,
         startTime: new Date(),
+        durationMinutes,
         status: "ongoing",
         payloadMap,
       })
@@ -424,6 +454,7 @@ export const startExam = async (
         packageId: examSessions.packageId,
         attemptNumber: examSessions.attemptNumber,
         startTime: examSessions.startTime,
+        durationMinutes: examSessions.durationMinutes,
       });
 
     res.status(201).json({
@@ -434,7 +465,7 @@ export const startExam = async (
       attempt_number: createdSession.attemptNumber,
       question_count: questionLimit,
       startTime: createdSession.startTime,
-      durationMinutes,
+      durationMinutes: createdSession.durationMinutes ?? durationMinutes,
       gracePeriodMinutes: EXAM_GRACE_PERIOD_MINUTES,
       questions: toPublicQuestions(payloadMap),
     });
@@ -473,6 +504,7 @@ type CompleteSessionInput = {
   sessionId: number;
   userId: number;
   startTime: Date;
+  durationMinutes: number;
   payloadMap: ExamPayloadMap;
 };
 
@@ -588,6 +620,7 @@ const completeSession = async (session: CompleteSessionInput) => {
     totalQuestions: computed.totalQuestions,
     correctAnswers: computed.correctAnswers,
     startedAt: session.startTime,
+    durationMinutes: session.durationMinutes,
     submittedAt,
   };
 };
@@ -600,6 +633,7 @@ const getOngoingSession = async (userId: number) => {
       packageId: examSessions.packageId,
       attemptNumber: examSessions.attemptNumber,
       startTime: examSessions.startTime,
+      durationMinutes: examSessions.durationMinutes,
       payloadMap: examSessions.payloadMap,
     })
     .from(examSessions)
@@ -627,11 +661,16 @@ export const getCurrentExam = async (
     }
 
     const payloadMap = ongoingSession.payloadMap as ExamPayloadMap;
-    if (isSubmitWindowExpired(ongoingSession.startTime, payloadMap.durationMinutes)) {
+    const durationMinutes = resolveSessionDurationMinutes(
+      payloadMap,
+      ongoingSession.durationMinutes,
+    );
+    if (isSubmitWindowExpired(ongoingSession.startTime, durationMinutes)) {
       const summary = await completeSession({
         sessionId: ongoingSession.id,
         userId: ongoingSession.userId,
         startTime: ongoingSession.startTime,
+        durationMinutes,
         payloadMap,
       });
       res.status(409).json({
@@ -659,7 +698,7 @@ export const getCurrentExam = async (
       attempt_number: ongoingSession.attemptNumber,
       question_count: questionPackage?.questionCount ?? getSessionQuestions(payloadMap).length,
       startTime: ongoingSession.startTime,
-      durationMinutes: payloadMap.durationMinutes,
+      durationMinutes,
       gracePeriodMinutes: payloadMap.gracePeriodMinutes,
       questions: toPublicQuestions(payloadMap),
       answers: answerRows.map((item) => ({
@@ -691,12 +730,17 @@ export const saveExamAnswer = async (
     }
 
     const payloadMap = ongoingSession.payloadMap as ExamPayloadMap;
+    const durationMinutes = resolveSessionDurationMinutes(
+      payloadMap,
+      ongoingSession.durationMinutes,
+    );
 
-    if (isSubmitWindowExpired(ongoingSession.startTime, payloadMap.durationMinutes)) {
+    if (isSubmitWindowExpired(ongoingSession.startTime, durationMinutes)) {
       const summary = await completeSession({
         sessionId: ongoingSession.id,
         userId: ongoingSession.userId,
         startTime: ongoingSession.startTime,
+        durationMinutes,
         payloadMap,
       });
       res.status(409).json({
@@ -798,11 +842,18 @@ export const submitExam = async (
       return;
     }
 
+    const payloadMap = ongoingSession.payloadMap as ExamPayloadMap;
+    const durationMinutes = resolveSessionDurationMinutes(
+      payloadMap,
+      ongoingSession.durationMinutes,
+    );
+
     const summary = await completeSession({
       sessionId: ongoingSession.id,
       userId: ongoingSession.userId,
       startTime: ongoingSession.startTime,
-      payloadMap: ongoingSession.payloadMap as ExamPayloadMap,
+      durationMinutes,
+      payloadMap,
     });
     const questionPackage = await getPackageSummary(ongoingSession.packageId);
 
@@ -815,6 +866,7 @@ export const submitExam = async (
       score: summary.score,
       totalQuestions: summary.totalQuestions,
       correctAnswers: summary.correctAnswers,
+      durationMinutes: summary.durationMinutes,
     });
 
     await logActivity({
@@ -875,6 +927,7 @@ export const getExamResult = async (
         packageName: examPackages.name,
         attemptNumber: examSessions.attemptNumber,
         startTime: examSessions.startTime,
+        durationMinutes: examSessions.durationMinutes,
         endTime: examSessions.endTime,
         status: examSessions.status,
         score: examSessions.score,
@@ -909,6 +962,10 @@ export const getExamResult = async (
       session.payloadMap as ExamPayloadMap,
       answerRows,
     );
+    const durationMinutes = resolveSessionDurationMinutes(
+      session.payloadMap as ExamPayloadMap,
+      session.durationMinutes,
+    );
 
     res.status(200).json({
       sessionId: session.id,
@@ -920,6 +977,7 @@ export const getExamResult = async (
       totalQuestions: computed.totalQuestions,
       correctAnswers: computed.correctAnswers,
       startedAt: session.startTime,
+      durationMinutes,
       submittedAt: session.endTime,
       questions: computed.details,
     });
@@ -948,6 +1006,7 @@ export const listMyExamSessions = async (
         status: examSessions.status,
         score: examSessions.score,
         startTime: examSessions.startTime,
+        durationMinutes: examSessions.durationMinutes,
         endTime: examSessions.endTime,
         payloadMap: examSessions.payloadMap,
       })
@@ -959,6 +1018,10 @@ export const listMyExamSessions = async (
     res.status(200).json(
       rows.map((row) => {
         const payloadMap = row.payloadMap as ExamPayloadMap;
+        const durationMinutes = resolveSessionDurationMinutes(
+          payloadMap,
+          row.durationMinutes,
+        );
         return {
           session_id: row.id,
           package_id: row.packageId,
@@ -967,6 +1030,7 @@ export const listMyExamSessions = async (
           status: row.status,
           score: row.score ?? 0,
           total_questions: getSessionQuestions(payloadMap).length,
+          duration_minutes: durationMinutes,
           start_time: row.startTime,
           end_time: row.endTime,
         };

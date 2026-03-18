@@ -8,6 +8,7 @@ import {
   listMyTransactions,
   listPackages,
   midtransWebhook,
+  paymentHubWebhook,
   syncMyTransactionStatus,
 } from "../controllers/transactionController.js";
 import { authMiddleware } from "../middlewares/authMiddleware.js";
@@ -30,3 +31,4 @@ transactionRoutes.post(
   syncMyTransactionStatus,
 );
 transactionRoutes.post("/transactions/midtrans/webhook", midtransWebhook);
+transactionRoutes.post("/transactions/payment-hub/callback", paymentHubWebhook);

@@ -9,6 +9,7 @@ import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import {
   PaymentServiceError,
   applyMidtransNotification,
+  applyPaymentHubNotification,
   createTransactionOrder,
   getTransactionDetailById,
   getTransactionDetailByOrderCode,
@@ -18,6 +19,11 @@ import { listUserPurchaseHistory } from "../services/packageAccess.js";
 import {
   verifyMidtransNotificationSignature,
 } from "../services/midtransService.js";
+import {
+  PaymentHubHttpError,
+  isPaymentHubMode,
+  verifyPaymentHubCallbackSignature,
+} from "../services/paymentHubService.js";
 import { logActivity } from "../utils/activityLog.js";
 
 const normalizePositiveInteger = (value: unknown): number | null => {
@@ -105,6 +111,16 @@ export const getPaymentConfig = async (
   res: Response,
 ): Promise<void> => {
   try {
+    if (isPaymentHubMode()) {
+      res.status(200).json({
+        provider: "payment_hub",
+        client_key: null,
+        is_production: null,
+        snap_script_url: null,
+      });
+      return;
+    }
+
     const config = getMidtransConfig();
 
     res.status(200).json({
@@ -301,6 +317,51 @@ export const midtransWebhook = async (
     });
   } catch (error) {
     console.error("midtransWebhook error:", error);
+    res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+export const paymentHubWebhook = async (
+  req: Request,
+  res: Response,
+): Promise<void> => {
+  try {
+    const payload =
+      req.body && typeof req.body === "object"
+        ? (req.body as Record<string, unknown>)
+        : null;
+
+    if (!payload) {
+      res.status(400).json({ message: "Invalid payment hub payload." });
+      return;
+    }
+
+    verifyPaymentHubCallbackSignature(payload, req.headers);
+
+    const updated = await applyPaymentHubNotification(
+      payload,
+      "payment_hub_callback",
+    );
+    if (!updated) {
+      console.error("paymentHubWebhook order not found", payload);
+      res.status(200).json({ message: "Notification ignored." });
+      return;
+    }
+
+    res.status(200).json({
+      message: "Notification processed.",
+      transaction_id: updated.id,
+      status: updated.status,
+      order_code: updated.order_code,
+    });
+  } catch (error) {
+    console.error("paymentHubWebhook error:", error);
+
+    if (error instanceof PaymentHubHttpError) {
+      res.status(error.status).json({ message: error.message });
+      return;
+    }
+
     res.status(500).json({ message: "Internal server error." });
   }
 };
