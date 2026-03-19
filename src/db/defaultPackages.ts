@@ -8,6 +8,7 @@ export interface DefaultPackageExam {
   name: string;
   description: string;
   questionCount: number;
+  sessionLimit?: number | null;
   sortOrder: number;
 }
 
@@ -16,153 +17,95 @@ export interface DefaultExamPackage {
   description: string;
   price: number;
   features: string;
-  sessionLimit?: number | null;
-  validityDays?: number | null;
   exams: DefaultPackageExam[];
 }
 
 export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
   {
-    name: "Try Out Gratis 2025-2026",
-    description:
-      "Paket gratis untuk mencoba alur platform dengan empat mini tryout pengenalan.",
-    price: 0,
-    features:
-      "4 ujian demo, klinis dan industri, tahun 2025-2026, akses gratis",
-    sessionLimit: null,
-    validityDays: null,
-    exams: [
-      {
-        name: "TRY OUT GRATIS KLINIS 2025 25 SOAL",
-        description: "Sesi demo klinis 2025 dengan 25 soal.",
-        questionCount: 25,
-        sortOrder: 1,
-      },
-      {
-        name: "TRY OUT GRATIS INDUSTRI 2025 25 SOAL",
-        description: "Sesi demo industri 2025 dengan 25 soal.",
-        questionCount: 25,
-        sortOrder: 2,
-      },
-      {
-        name: "TRY OUT GRATIS KLINIS 2026 25 SOAL",
-        description: "Sesi demo klinis 2026 dengan 25 soal.",
-        questionCount: 25,
-        sortOrder: 3,
-      },
-      {
-        name: "TRY OUT GRATIS INDUSTRI 2026 25 SOAL",
-        description: "Sesi demo industri 2026 dengan 25 soal.",
-        questionCount: 25,
-        sortOrder: 4,
-      },
-    ],
-  },
-  {
-    name: "Paket Mini Try Out 2025-2026",
-    description:
-      "Bundel mini tryout dengan fokus klinis dan industri untuk tahun 2025-2026.",
+    name: "PAKET TRY OUT A",
+    description: "mendapatkan 4x Tipe Ujian",
     price: 49000,
     features:
-      "4 mini tryout, 50 soal per ujian, klinis dan industri, tahun 2025-2026",
-    sessionLimit: null,
-    validityDays: null,
+      "4 tipe ujian: Soal Uji Klinis 2024, Soal Uji Industri 2024, Soal Uji Klinis 2025, Soal Uji Industri 2025",
     exams: [
       {
-        name: "MINI TRYOUT KLINIS 2025 50 SOAL",
-        description: "Mini tryout klinis tahun 2025 dengan 50 soal.",
+        name: "Soal Uji Klinis 2024",
+        description: "Tipe ujian klinis 2024.",
         questionCount: 50,
+        sessionLimit: null,
         sortOrder: 1,
       },
       {
-        name: "MINI TRYOUT INDUSTRI 2025 50 SOAL",
-        description: "Mini tryout industri tahun 2025 dengan 50 soal.",
+        name: "Soal Uji Industri 2024",
+        description: "Tipe ujian industri 2024.",
         questionCount: 50,
+        sessionLimit: null,
         sortOrder: 2,
       },
       {
-        name: "MINI TRYOUT KLINIS 2026 50 SOAL",
-        description: "Mini tryout klinis tahun 2026 dengan 50 soal.",
+        name: "Soal Uji Klinis 2025",
+        description: "Tipe ujian klinis 2025.",
         questionCount: 50,
+        sessionLimit: null,
         sortOrder: 3,
       },
       {
-        name: "MINI TRYOUT INDUSTRI 2026 50 SOAL",
-        description: "Mini tryout industri tahun 2026 dengan 50 soal.",
+        name: "Soal Uji Industri 2025",
+        description: "Tipe ujian industri 2025.",
         questionCount: 50,
+        sessionLimit: null,
         sortOrder: 4,
       },
     ],
   },
   {
-    name: "Paket Try Out Reguler 2025-2026",
-    description:
-      "Bundel tryout reguler untuk simulasi klinis dan industri yang lebih lengkap.",
+    name: "PAKET TRY OUT B",
+    description: "mendapatkan 6x Tipe Ujian",
     price: 99000,
     features:
-      "4 tryout reguler, 100 soal per ujian, klinis dan industri, tahun 2025-2026",
-    sessionLimit: null,
-    validityDays: null,
+      "6 tipe ujian: Soal Uji Klinis 2024, Soal Uji Industri 2024, Soal Uji Klinis 2025, Soal Uji Industri 2025, Simulasi UKKPT 2026 TERBARU, Prediksi UKAI 2026 TERBARU",
     exams: [
       {
-        name: "TRYOUT KLINIS 2025 100 SOAL",
-        description: "Tryout reguler klinis tahun 2025 dengan 100 soal.",
-        questionCount: 100,
+        name: "Soal Uji Klinis 2024",
+        description: "Tipe ujian klinis 2024.",
+        questionCount: 50,
+        sessionLimit: null,
         sortOrder: 1,
       },
       {
-        name: "TRYOUT INDUSTRI 2025 100 SOAL",
-        description: "Tryout reguler industri tahun 2025 dengan 100 soal.",
-        questionCount: 100,
+        name: "Soal Uji Industri 2024",
+        description: "Tipe ujian industri 2024.",
+        questionCount: 50,
+        sessionLimit: null,
         sortOrder: 2,
       },
       {
-        name: "TRYOUT KLINIS 2026 100 SOAL",
-        description: "Tryout reguler klinis tahun 2026 dengan 100 soal.",
-        questionCount: 100,
+        name: "Soal Uji Klinis 2025",
+        description: "Tipe ujian klinis 2025.",
+        questionCount: 50,
+        sessionLimit: null,
         sortOrder: 3,
       },
       {
-        name: "TRYOUT INDUSTRI 2026 100 SOAL",
-        description: "Tryout reguler industri tahun 2026 dengan 100 soal.",
-        questionCount: 100,
+        name: "Soal Uji Industri 2025",
+        description: "Tipe ujian industri 2025.",
+        questionCount: 50,
+        sessionLimit: null,
         sortOrder: 4,
       },
-    ],
-  },
-  {
-    name: "Paket Final Try Out 2025-2026",
-    description:
-      "Bundel final tryout untuk pemanasan akhir sebelum ujian utama klinis dan industri.",
-    price: 129000,
-    features:
-      "4 final tryout, 100 soal per ujian, klinis dan industri, tahun 2025-2026",
-    sessionLimit: null,
-    validityDays: null,
-    exams: [
       {
-        name: "FINAL TRYOUT KLINIS 2025 100 SOAL",
-        description: "Final tryout klinis tahun 2025 dengan 100 soal.",
-        questionCount: 100,
-        sortOrder: 1,
+        name: "Simulasi UKKPT 2026 TERBARU",
+        description: "Tipe ujian simulasi UKKPT terbaru tahun 2026.",
+        questionCount: 50,
+        sessionLimit: null,
+        sortOrder: 5,
       },
       {
-        name: "FINAL TRYOUT INDUSTRI 2025 100 SOAL",
-        description: "Final tryout industri tahun 2025 dengan 100 soal.",
-        questionCount: 100,
-        sortOrder: 2,
-      },
-      {
-        name: "FINAL TRYOUT KLINIS 2026 100 SOAL",
-        description: "Final tryout klinis tahun 2026 dengan 100 soal.",
-        questionCount: 100,
-        sortOrder: 3,
-      },
-      {
-        name: "FINAL TRYOUT INDUSTRI 2026 100 SOAL",
-        description: "Final tryout industri tahun 2026 dengan 100 soal.",
-        questionCount: 100,
-        sortOrder: 4,
+        name: "Prediksi UKAI 2026 TERBARU",
+        description: "Tipe ujian prediksi UKAI terbaru tahun 2026.",
+        questionCount: 50,
+        sessionLimit: null,
+        sortOrder: 6,
       },
     ],
   },
@@ -190,8 +133,6 @@ export const syncDefaultExamPackages = async (): Promise<void> => {
         price: defaultPackage.price,
         features: defaultPackage.features,
         questionCount: getPackageQuestionCount(defaultPackage),
-        sessionLimit: defaultPackage.sessionLimit ?? null,
-        validityDays: defaultPackage.validityDays ?? null,
         isActive: true,
       });
     }
@@ -206,18 +147,20 @@ export const syncDefaultExamPackages = async (): Promise<void> => {
     .where(inArray(examPackages.name, DEFAULT_EXAM_PACKAGES.map((item) => item.name)));
 
   const packageIdByName = new Map(packageRows.map((item) => [item.name, item.id]));
-  const exams = await db
-    .select({
-      id: packageExams.id,
-      packageId: packageExams.packageId,
-      name: packageExams.name,
-    })
-    .from(packageExams)
-    .where(inArray(packageExams.packageId, packageRows.map((item) => item.id)))
-    .orderBy(asc(packageExams.packageId), asc(packageExams.sortOrder), asc(packageExams.id));
+  const examRows = packageRows.length
+    ? await db
+        .select({
+          id: packageExams.id,
+          packageId: packageExams.packageId,
+          name: packageExams.name,
+        })
+        .from(packageExams)
+        .where(inArray(packageExams.packageId, packageRows.map((item) => item.id)))
+        .orderBy(asc(packageExams.packageId), asc(packageExams.sortOrder), asc(packageExams.id))
+    : [];
 
   const examNamesByPackage = new Map<number, Set<string>>();
-  for (const exam of exams) {
+  for (const exam of examRows) {
     const rows = examNamesByPackage.get(exam.packageId) ?? new Set<string>();
     rows.add(exam.name);
     examNamesByPackage.set(exam.packageId, rows);
@@ -240,6 +183,7 @@ export const syncDefaultExamPackages = async (): Promise<void> => {
         name: exam.name,
         description: exam.description,
         questionCount: exam.questionCount,
+        sessionLimit: exam.sessionLimit ?? null,
         sortOrder: exam.sortOrder,
         isActive: true,
       });

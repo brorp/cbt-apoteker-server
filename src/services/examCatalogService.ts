@@ -23,6 +23,7 @@ type ExamRow = {
   name: string;
   description: string;
   questionCount: number;
+  sessionLimit: number | null;
   sortOrder: number;
   isActive: boolean;
 };
@@ -52,6 +53,7 @@ export const syncPackageExamCatalog = async (): Promise<void> => {
       name: packageExams.name,
       description: packageExams.description,
       questionCount: packageExams.questionCount,
+      sessionLimit: packageExams.sessionLimit,
       sortOrder: packageExams.sortOrder,
       isActive: packageExams.isActive,
     })
@@ -81,6 +83,7 @@ export const syncPackageExamCatalog = async (): Promise<void> => {
         name: getDefaultExamName(pkg),
         description: pkg.description,
         questionCount: pkg.questionCount > 0 ? pkg.questionCount : 50,
+        sessionLimit: null,
         sortOrder: 1,
         isActive: pkg.isActive,
       })
@@ -90,6 +93,7 @@ export const syncPackageExamCatalog = async (): Promise<void> => {
         name: packageExams.name,
         description: packageExams.description,
         questionCount: packageExams.questionCount,
+        sessionLimit: packageExams.sessionLimit,
         sortOrder: packageExams.sortOrder,
         isActive: packageExams.isActive,
       });
@@ -104,6 +108,7 @@ export const syncPackageExamCatalog = async (): Promise<void> => {
       name: packageExams.name,
       description: packageExams.description,
       questionCount: packageExams.questionCount,
+      sessionLimit: packageExams.sessionLimit,
       sortOrder: packageExams.sortOrder,
       isActive: packageExams.isActive,
     })
@@ -170,6 +175,7 @@ export const listPackageExams = async (
       name: packageExams.name,
       description: packageExams.description,
       questionCount: packageExams.questionCount,
+      sessionLimit: packageExams.sessionLimit,
       sortOrder: packageExams.sortOrder,
       isActive: packageExams.isActive,
       createdAt: packageExams.createdAt,
@@ -214,6 +220,7 @@ export const getPackageExamOptions = async (packageId: number) => {
     name: row.name,
     description: row.description,
     question_count: row.questionCount,
+    session_limit: row.sessionLimit,
     sort_order: row.sortOrder,
     is_active: row.isActive,
     created_at: row.createdAt,

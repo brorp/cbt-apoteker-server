@@ -11,12 +11,6 @@ type PackagePayload = {
   description?: unknown;
   features?: unknown;
   price?: unknown;
-  question_count?: unknown;
-  questionCount?: unknown;
-  session_limit?: unknown;
-  sessionLimit?: unknown;
-  validity_days?: unknown;
-  validityDays?: unknown;
   is_active?: unknown;
   isActive?: unknown;
   exams?: unknown;
@@ -28,6 +22,8 @@ type PackageExamPayload = {
   description?: unknown;
   question_count?: unknown;
   questionCount?: unknown;
+  session_limit?: unknown;
+  sessionLimit?: unknown;
   sort_order?: unknown;
   sortOrder?: unknown;
   is_active?: unknown;
@@ -39,6 +35,7 @@ type NormalizedPackageExamInput = {
   name: string;
   description: string;
   questionCount: number;
+  sessionLimit: number | null;
   sortOrder: number;
   isActive: boolean;
 };
@@ -63,6 +60,7 @@ type PackageExamRow = {
   name: string;
   description: string;
   questionCount: number;
+  sessionLimit: number | null;
   sortOrder: number;
   isActive: boolean;
   createdAt: Date;
@@ -201,6 +199,8 @@ const normalizeExamList = (
     const questionCount = normalizePositiveInteger(
       payload.question_count ?? payload.questionCount,
     );
+    const rawSessionLimit = payload.session_limit ?? payload.sessionLimit;
+    const sessionLimit = normalizeNullablePositiveInteger(rawSessionLimit);
     const sortOrder =
       normalizePositiveInteger(payload.sort_order ?? payload.sortOrder) ??
       index + 1;
@@ -221,11 +221,24 @@ const normalizeExamList = (
       };
     }
 
+    if (
+      sessionLimit === null &&
+      rawSessionLimit !== null &&
+      rawSessionLimit !== undefined &&
+      rawSessionLimit !== ""
+    ) {
+      return {
+        exams: [],
+        error: `Invalid session_limit for exam "${name}".`,
+      };
+    }
+
     exams.push({
       ...(id ? { id } : {}),
       name,
       description,
       questionCount,
+      sessionLimit,
       sortOrder,
       isActive,
     });
@@ -240,6 +253,7 @@ const toExamResponse = (row: PackageExamRow) => ({
   name: row.name,
   description: row.description,
   question_count: row.questionCount,
+  session_limit: row.sessionLimit,
   sort_order: row.sortOrder,
   is_active: row.isActive,
   created_at: row.createdAt,
@@ -255,8 +269,6 @@ const toPackageResponse = (row: PackageRow, exams: PackageExamRow[] = []) => ({
   question_count:
     exams.reduce((total, exam) => total + exam.questionCount, 0) ||
     row.questionCount,
-  session_limit: row.sessionLimit,
-  validity_days: row.validityDays,
   is_active: row.isActive,
   exam_count: exams.length,
   exams: exams.map(toExamResponse),
@@ -294,6 +306,7 @@ const getExamRows = async (packageIds: number[]): Promise<PackageExamRow[]> => {
       name: packageExams.name,
       description: packageExams.description,
       questionCount: packageExams.questionCount,
+      sessionLimit: packageExams.sessionLimit,
       sortOrder: packageExams.sortOrder,
       isActive: packageExams.isActive,
       createdAt: packageExams.createdAt,
@@ -387,6 +400,7 @@ const applyNestedPackageExams = async (
           name: exam.name,
           description: exam.description,
           questionCount: exam.questionCount,
+          sessionLimit: exam.sessionLimit,
           sortOrder: exam.sortOrder,
           isActive: exam.isActive,
           updatedAt: new Date(),
@@ -402,6 +416,7 @@ const applyNestedPackageExams = async (
         name: exam.name,
         description: exam.description,
         questionCount: exam.questionCount,
+        sessionLimit: exam.sessionLimit,
         sortOrder: exam.sortOrder,
         isActive: exam.isActive,
       })
@@ -467,12 +482,6 @@ export const createAdminPackage = async (
     const features =
       typeof body.features === "string" ? body.features.trim() : "";
     const price = normalizeNonNegativeInteger(body.price);
-    const sessionLimit = normalizeNullablePositiveInteger(
-      body.session_limit ?? body.sessionLimit,
-    );
-    const validityDays = normalizeNullablePositiveInteger(
-      body.validity_days ?? body.validityDays,
-    );
     const isActive = normalizeBoolean(body.is_active ?? body.isActive) ?? true;
     const normalizedExams = normalizeExamList(body.exams, true);
 
@@ -501,8 +510,6 @@ export const createAdminPackage = async (
         features,
         price,
         questionCount: totalQuestionCount,
-        sessionLimit,
-        validityDays,
         isActive,
       })
       .returning({
@@ -552,8 +559,6 @@ export const updateAdminPackage = async (
       description: string;
       features: string;
       price: number;
-      sessionLimit: number | null;
-      validityDays: number | null;
       isActive: boolean;
       updatedAt: Date;
     }> = {};
@@ -574,34 +579,6 @@ export const updateAdminPackage = async (
         return;
       }
       updates.price = price;
-    }
-    const rawSessionLimit = body.session_limit ?? body.sessionLimit;
-    if (body.session_limit !== undefined || body.sessionLimit !== undefined) {
-      const sessionLimit = normalizeNullablePositiveInteger(rawSessionLimit);
-      if (
-        sessionLimit === null &&
-        rawSessionLimit !== null &&
-        rawSessionLimit !== undefined &&
-        rawSessionLimit !== ""
-      ) {
-        res.status(400).json({ message: "Invalid session_limit." });
-        return;
-      }
-      updates.sessionLimit = sessionLimit;
-    }
-    const rawValidityDays = body.validity_days ?? body.validityDays;
-    if (body.validity_days !== undefined || body.validityDays !== undefined) {
-      const validityDays = normalizeNullablePositiveInteger(rawValidityDays);
-      if (
-        validityDays === null &&
-        rawValidityDays !== null &&
-        rawValidityDays !== undefined &&
-        rawValidityDays !== ""
-      ) {
-        res.status(400).json({ message: "Invalid validity_days." });
-        return;
-      }
-      updates.validityDays = validityDays;
     }
     if (body.is_active !== undefined || body.isActive !== undefined) {
       const isActive = normalizeBoolean(body.is_active ?? body.isActive);
@@ -742,6 +719,8 @@ export const createAdminPackageExam = async (
     const questionCount = normalizePositiveInteger(
       body.question_count ?? body.questionCount,
     );
+    const rawSessionLimit = body.session_limit ?? body.sessionLimit;
+    const sessionLimit = normalizeNullablePositiveInteger(rawSessionLimit);
     const sortOrder =
       normalizePositiveInteger(body.sort_order ?? body.sortOrder) ?? 1;
     const isActive = normalizeBoolean(body.is_active ?? body.isActive) ?? true;
@@ -754,6 +733,16 @@ export const createAdminPackageExam = async (
       return;
     }
 
+    if (
+      sessionLimit === null &&
+      rawSessionLimit !== null &&
+      rawSessionLimit !== undefined &&
+      rawSessionLimit !== ""
+    ) {
+      res.status(400).json({ message: "Invalid session_limit." });
+      return;
+    }
+
     const [created] = await db
       .insert(packageExams)
       .values({
@@ -761,6 +750,7 @@ export const createAdminPackageExam = async (
         name,
         description,
         questionCount,
+        sessionLimit,
         sortOrder,
         isActive,
       })
@@ -770,6 +760,7 @@ export const createAdminPackageExam = async (
         name: packageExams.name,
         description: packageExams.description,
         questionCount: packageExams.questionCount,
+        sessionLimit: packageExams.sessionLimit,
         sortOrder: packageExams.sortOrder,
         isActive: packageExams.isActive,
         createdAt: packageExams.createdAt,
@@ -815,6 +806,7 @@ export const updateAdminPackageExam = async (
       name: string;
       description: string;
       questionCount: number;
+      sessionLimit: number | null;
       sortOrder: number;
       isActive: boolean;
       updatedAt: Date;
@@ -835,6 +827,20 @@ export const updateAdminPackageExam = async (
         return;
       }
       updates.questionCount = questionCount;
+    }
+    const rawSessionLimit = body.session_limit ?? body.sessionLimit;
+    if (body.session_limit !== undefined || body.sessionLimit !== undefined) {
+      const sessionLimit = normalizeNullablePositiveInteger(rawSessionLimit);
+      if (
+        sessionLimit === null &&
+        rawSessionLimit !== null &&
+        rawSessionLimit !== undefined &&
+        rawSessionLimit !== ""
+      ) {
+        res.status(400).json({ message: "Invalid session_limit." });
+        return;
+      }
+      updates.sessionLimit = sessionLimit;
     }
     if (body.sort_order !== undefined || body.sortOrder !== undefined) {
       const sortOrder = normalizePositiveInteger(
@@ -872,6 +878,7 @@ export const updateAdminPackageExam = async (
         name: packageExams.name,
         description: packageExams.description,
         questionCount: packageExams.questionCount,
+        sessionLimit: packageExams.sessionLimit,
         sortOrder: packageExams.sortOrder,
         isActive: packageExams.isActive,
         createdAt: packageExams.createdAt,
@@ -911,6 +918,7 @@ export const archiveAdminPackageExam = async (
         name: packageExams.name,
         description: packageExams.description,
         questionCount: packageExams.questionCount,
+        sessionLimit: packageExams.sessionLimit,
         sortOrder: packageExams.sortOrder,
         isActive: packageExams.isActive,
         createdAt: packageExams.createdAt,

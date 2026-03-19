@@ -181,6 +181,7 @@ export const packageExams = pgTable("package_exams", {
   name: varchar("name", { length: 180 }).notNull(),
   description: text("description").notNull().default(""),
   questionCount: integer("question_count").notNull().default(50),
+  sessionLimit: integer("session_limit"),
   sortOrder: integer("sort_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })

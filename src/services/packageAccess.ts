@@ -14,9 +14,6 @@ import {
   toClientTransactionStatus,
 } from "../utils/transactionStatus.js";
 
-const addDays = (baseDate: Date, days: number): Date =>
-  new Date(baseDate.getTime() + days * 24 * 60 * 60 * 1000);
-
 const expireAccessIfNeeded = async (input: {
   id: number;
   status: "active" | "inactive" | "expired";
@@ -97,7 +94,6 @@ export const grantPackageAccessForTransaction = async (
       status: transactions.status,
       paidAt: transactions.paidAt,
       packagePrice: examPackages.price,
-      validityDays: examPackages.validityDays,
     })
     .from(transactions)
     .innerJoin(examPackages, eq(transactions.packageId, examPackages.id))
@@ -109,10 +105,6 @@ export const grantPackageAccessForTransaction = async (
   }
 
   const now = new Date();
-  const expiresAt =
-    typeof transactionRow.validityDays === "number" && transactionRow.validityDays > 0
-      ? addDays(now, transactionRow.validityDays)
-      : null;
 
   await db
     .insert(userPackageAccesses)
@@ -124,7 +116,7 @@ export const grantPackageAccessForTransaction = async (
       source: transactionRow.packagePrice === 0 ? "free_package" : "transaction",
       grantedAt: now,
       activatedAt: transactionRow.paidAt ?? now,
-      expiresAt,
+      expiresAt: null,
     })
     .onConflictDoUpdate({
       target: [userPackageAccesses.userId, userPackageAccesses.packageId],
@@ -134,7 +126,7 @@ export const grantPackageAccessForTransaction = async (
         source: transactionRow.packagePrice === 0 ? "free_package" : "transaction",
         grantedAt: now,
         activatedAt: transactionRow.paidAt ?? now,
-        expiresAt,
+        expiresAt: null,
         updatedAt: now,
       },
     });
@@ -155,28 +147,62 @@ export const deactivatePackageAccessForTransaction = async (
 export const getPackageAccessState = async (input: {
   userId: number;
   packageId: number;
+  examId?: number | null;
 }) => {
   await syncLegacyPremiumAccess(input.userId);
 
-  const [questionPackage] = await db
-    .select({
-      id: examPackages.id,
-      name: examPackages.name,
-      price: examPackages.price,
-      isActive: examPackages.isActive,
-      questionCount: examPackages.questionCount,
-      sessionLimit: examPackages.sessionLimit,
-      validityDays: examPackages.validityDays,
-    })
-    .from(examPackages)
-    .where(eq(examPackages.id, input.packageId))
-    .limit(1);
+  const [questionPackage, selectedExam] = await Promise.all([
+    db
+      .select({
+        id: examPackages.id,
+        name: examPackages.name,
+        price: examPackages.price,
+        isActive: examPackages.isActive,
+        questionCount: examPackages.questionCount,
+      })
+      .from(examPackages)
+      .where(eq(examPackages.id, input.packageId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+    input.examId
+      ? db
+          .select({
+            id: packageExams.id,
+            packageId: packageExams.packageId,
+            name: packageExams.name,
+            questionCount: packageExams.questionCount,
+            sessionLimit: packageExams.sessionLimit,
+            isActive: packageExams.isActive,
+          })
+          .from(packageExams)
+          .where(eq(packageExams.id, input.examId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : Promise.resolve(null),
+  ]);
 
   if (!questionPackage || !questionPackage.isActive) {
     return {
       allowed: false,
       reason: "package_not_found" as const,
       package: questionPackage ?? null,
+      exam: selectedExam,
+      access: null,
+      sessionsUsed: 0,
+    };
+  }
+
+  if (
+    input.examId &&
+    (!selectedExam ||
+      !selectedExam.isActive ||
+      selectedExam.packageId !== questionPackage.id)
+  ) {
+    return {
+      allowed: false,
+      reason: "package_not_found" as const,
+      package: questionPackage,
+      exam: selectedExam,
       access: null,
       sessionsUsed: 0,
     };
@@ -188,20 +214,24 @@ export const getPackageAccessState = async (input: {
     .where(
       and(
         eq(examSessions.userId, input.userId),
-        eq(examSessions.packageId, questionPackage.id),
+        input.examId
+          ? eq(examSessions.examId, input.examId)
+          : eq(examSessions.packageId, questionPackage.id),
       ),
     );
 
   const sessionsUsed = Number(sessionAggregate?.total ?? 0);
   if (
-    typeof questionPackage.sessionLimit === "number" &&
-    questionPackage.sessionLimit > 0 &&
-    sessionsUsed >= questionPackage.sessionLimit
+    selectedExam &&
+    typeof selectedExam.sessionLimit === "number" &&
+    selectedExam.sessionLimit > 0 &&
+    sessionsUsed >= selectedExam.sessionLimit
   ) {
     return {
       allowed: false,
       reason: "session_limit_reached" as const,
       package: questionPackage,
+      exam: selectedExam,
       access: null,
       sessionsUsed,
     };
@@ -212,6 +242,7 @@ export const getPackageAccessState = async (input: {
       allowed: true,
       reason: "free_package" as const,
       package: questionPackage,
+      exam: selectedExam,
       access: null,
       sessionsUsed,
     };
@@ -241,6 +272,7 @@ export const getPackageAccessState = async (input: {
       allowed: false,
       reason: "not_purchased" as const,
       package: questionPackage,
+      exam: selectedExam,
       access: null,
       sessionsUsed,
     };
@@ -257,6 +289,7 @@ export const getPackageAccessState = async (input: {
       allowed: false,
       reason: normalizedStatus === "expired" ? "expired" as const : "inactive" as const,
       package: questionPackage,
+      exam: selectedExam,
       access: { ...accessRow, status: normalizedStatus },
       sessionsUsed,
     };
@@ -266,6 +299,7 @@ export const getPackageAccessState = async (input: {
     allowed: true,
     reason: "purchased" as const,
     package: questionPackage,
+    exam: selectedExam,
     access: { ...accessRow, status: normalizedStatus },
     sessionsUsed,
   };
@@ -281,8 +315,6 @@ export const listUserPurchaseHistory = async (userId: number) => {
       packageName: examPackages.name,
       packageDescription: examPackages.description,
       packagePrice: examPackages.price,
-      sessionLimit: examPackages.sessionLimit,
-      validityDays: examPackages.validityDays,
       orderCode: transactions.orderCode,
       transactionStatus: transactions.status,
       paymentMethod: transactions.paymentMethod,
@@ -310,8 +342,6 @@ export const listUserPurchaseHistory = async (userId: number) => {
       packageName: examPackages.name,
       packageDescription: examPackages.description,
       packagePrice: examPackages.price,
-      sessionLimit: examPackages.sessionLimit,
-      validityDays: examPackages.validityDays,
     })
     .from(userPackageAccesses)
     .leftJoin(examPackages, eq(userPackageAccesses.packageId, examPackages.id))
@@ -333,6 +363,7 @@ export const listUserPurchaseHistory = async (userId: number) => {
             name: packageExams.name,
             description: packageExams.description,
             questionCount: packageExams.questionCount,
+            sessionLimit: packageExams.sessionLimit,
             sortOrder: packageExams.sortOrder,
             isActive: packageExams.isActive,
           })
@@ -380,6 +411,7 @@ export const listUserPurchaseHistory = async (userId: number) => {
       name: string;
       description: string;
       questionCount: number;
+      sessionLimit: number | null;
       sortOrder: number;
       isActive: boolean;
     }>
@@ -404,8 +436,6 @@ export const listUserPurchaseHistory = async (userId: number) => {
       packageName: item.packageName ?? "-",
       packageDescription: item.packageDescription ?? "",
       packagePrice: item.packagePrice ?? 0,
-      sessionLimit: item.sessionLimit,
-      validityDays: item.validityDays,
       orderCode: item.orderCode,
       transactionStatus: toClientTransactionStatus(item.transactionStatus),
       paymentMethod: item.paymentMethod,
@@ -429,6 +459,7 @@ export const listUserPurchaseHistory = async (userId: number) => {
           name: exam.name,
           description: exam.description,
           questionCount: exam.questionCount,
+          sessionLimit: exam.sessionLimit,
           sortOrder: exam.sortOrder,
           isActive: exam.isActive,
         })),
@@ -443,8 +474,6 @@ export const listUserPurchaseHistory = async (userId: number) => {
       packageName: item.packageName ?? "-",
       packageDescription: item.packageDescription ?? "",
       packagePrice: item.packagePrice ?? 0,
-      sessionLimit: item.sessionLimit,
-      validityDays: item.validityDays,
       orderCode: null,
       transactionStatus: "paid" as const,
       paymentMethod: null,
@@ -471,6 +500,7 @@ export const listUserPurchaseHistory = async (userId: number) => {
           name: exam.name,
           description: exam.description,
           questionCount: exam.questionCount,
+          sessionLimit: exam.sessionLimit,
           sortOrder: exam.sortOrder,
           isActive: exam.isActive,
         })),

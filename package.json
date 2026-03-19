@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "seed": "tsx src/db/seed.ts"
+    "seed": "tsx src/db/seed.ts",
+    "seed:catalog:reset": "tsx src/db/resetPackageCatalog.ts"
   },
   "dependencies": {
     "@types/cors": "^2.8.19",

@@ -81,8 +81,6 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
         price: examPackages.price,
         features: examPackages.features,
         questionCount: examPackages.questionCount,
-        sessionLimit: examPackages.sessionLimit,
-        validityDays: examPackages.validityDays,
       })
       .from(examPackages)
       .where(eq(examPackages.isActive, true))
@@ -96,6 +94,7 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
             name: packageExams.name,
             description: packageExams.description,
             questionCount: packageExams.questionCount,
+            sessionLimit: packageExams.sessionLimit,
             sortOrder: packageExams.sortOrder,
             isActive: packageExams.isActive,
           })
@@ -130,11 +129,10 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
           name: exam.name,
           description: exam.description,
           question_count: exam.questionCount,
+          session_limit: exam.sessionLimit,
           sort_order: exam.sortOrder,
           is_active: exam.isActive,
         })),
-        session_limit: item.sessionLimit,
-        validity_days: item.validityDays,
       })),
     );
   } catch (error) {
@@ -422,8 +420,6 @@ export const listMyTransactions = async (
         package_name: item.packageName,
         package_description: item.packageDescription,
         package_price: item.packagePrice,
-        session_limit: item.sessionLimit,
-        validity_days: item.validityDays,
         order_code: item.orderCode,
         transaction_status: item.transactionStatus,
         payment_type: item.paymentType,
@@ -443,6 +439,7 @@ export const listMyTransactions = async (
           name: exam.name,
           description: exam.description,
           question_count: exam.questionCount,
+          session_limit: exam.sessionLimit,
           sort_order: exam.sortOrder,
           is_active: exam.isActive,
         })),

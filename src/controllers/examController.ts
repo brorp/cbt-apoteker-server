@@ -155,6 +155,7 @@ const getAccessDeniedMessage = (
     | "free_package"
     | "purchased",
   packageName: string | null,
+  examName?: string | null,
 ): string => {
   if (reason === "expired") {
     return `Akses untuk paket ${packageName ?? "ini"} sudah expired.`;
@@ -165,7 +166,7 @@ const getAccessDeniedMessage = (
   }
 
   if (reason === "session_limit_reached") {
-    return `Batas sesi untuk paket ${packageName ?? "ini"} sudah tercapai.`;
+    return `Batas sesi untuk tipe ujian ${examName ?? "ini"} sudah tercapai.`;
   }
 
   if (reason === "not_purchased") {
@@ -337,6 +338,7 @@ export const startExam = async (
       getPackageAccessState({
         userId,
         packageId: selectedExam.packageId,
+        examId: selectedExam.examId,
       }),
     ]);
 
@@ -385,7 +387,11 @@ export const startExam = async (
         },
       });
       res.status(403).json({
-        message: getAccessDeniedMessage(accessState.reason, selectedPackage.name),
+        message: getAccessDeniedMessage(
+          accessState.reason,
+          selectedPackage.name,
+          selectedExam.examName,
+        ),
       });
       return;
     }
