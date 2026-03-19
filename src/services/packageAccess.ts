@@ -3,6 +3,7 @@ import { and, count, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm"
 import { db } from "../config/db.js";
 import {
   examPackages,
+  packageExams,
   examSessions,
   transactions,
   userPackageAccesses,
@@ -323,6 +324,27 @@ export const listUserPurchaseHistory = async (userId: number) => {
     ]),
   ];
 
+  const examRows =
+    packageIds.length > 0
+      ? await db
+          .select({
+            id: packageExams.id,
+            packageId: packageExams.packageId,
+            name: packageExams.name,
+            description: packageExams.description,
+            questionCount: packageExams.questionCount,
+            sortOrder: packageExams.sortOrder,
+            isActive: packageExams.isActive,
+          })
+          .from(packageExams)
+          .where(
+            and(
+              inArray(packageExams.packageId, packageIds),
+              eq(packageExams.isActive, true),
+            ),
+          )
+      : [];
+
   const sessionRows =
     packageIds.length > 0
       ? await db
@@ -348,6 +370,25 @@ export const listUserPurchaseHistory = async (userId: number) => {
       row.packageId,
       (sessionsByPackageId.get(row.packageId) ?? 0) + 1,
     );
+  }
+
+  const examsByPackageId = new Map<
+    number,
+    Array<{
+      id: number;
+      packageId: number;
+      name: string;
+      description: string;
+      questionCount: number;
+      sortOrder: number;
+      isActive: boolean;
+    }>
+  >();
+
+  for (const exam of examRows) {
+    const rows = examsByPackageId.get(exam.packageId) ?? [];
+    rows.push(exam);
+    examsByPackageId.set(exam.packageId, rows);
   }
 
   const transactionHistory = transactionRows.map((item) => {
@@ -380,6 +421,17 @@ export const listUserPurchaseHistory = async (userId: number) => {
       activatedAt: access?.activatedAt ?? null,
       expiresAt: access?.expiresAt ?? null,
       sessionsUsed: sessionsByPackageId.get(item.packageId) ?? 0,
+      exams: (examsByPackageId.get(item.packageId) ?? [])
+        .sort((left, right) => left.sortOrder - right.sortOrder)
+        .map((exam) => ({
+          id: exam.id,
+          packageId: exam.packageId,
+          name: exam.name,
+          description: exam.description,
+          questionCount: exam.questionCount,
+          sortOrder: exam.sortOrder,
+          isActive: exam.isActive,
+        })),
     };
   });
 
@@ -411,6 +463,17 @@ export const listUserPurchaseHistory = async (userId: number) => {
       activatedAt: item.activatedAt,
       expiresAt: item.expiresAt,
       sessionsUsed: sessionsByPackageId.get(item.packageId) ?? 0,
+      exams: (examsByPackageId.get(item.packageId) ?? [])
+        .sort((left, right) => left.sortOrder - right.sortOrder)
+        .map((exam) => ({
+          id: exam.id,
+          packageId: exam.packageId,
+          name: exam.name,
+          description: exam.description,
+          questionCount: exam.questionCount,
+          sortOrder: exam.sortOrder,
+          isActive: exam.isActive,
+        })),
     }));
 
   return [...transactionHistory, ...accessOnlyHistory].sort(
