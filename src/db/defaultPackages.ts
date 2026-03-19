@@ -1,6 +1,7 @@
 import { asc } from "drizzle-orm";
 
 import { db } from "../config/db.js";
+import { syncPackageExamCatalog } from "../services/examCatalogService.js";
 import { examPackages } from "./schema.js";
 
 export interface DefaultExamPackage {
@@ -88,4 +89,6 @@ export const syncDefaultExamPackages = async (): Promise<void> => {
       isActive: true,
     });
   }
+
+  await syncPackageExamCatalog();
 };

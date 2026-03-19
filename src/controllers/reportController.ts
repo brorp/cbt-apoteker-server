@@ -3,13 +3,17 @@ import { and, asc, desc, eq } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import {
+  examAnswers,
   examPackages,
+  packageExams,
   examSessions,
   questionReportReplies,
   questionReports,
   questions,
   users,
   type ExamPayloadMap,
+  type ExamPayloadQuestion,
+  type OptionKey,
 } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import {
@@ -39,6 +43,96 @@ const getSessionQuestionIds = (payloadMap: ExamPayloadMap): number[] =>
   Array.isArray(payloadMap.questions)
     ? payloadMap.questions.map((item) => item.questionId)
     : [];
+
+const findSessionQuestion = (
+  payloadMap: ExamPayloadMap | null | undefined,
+  questionId: number,
+): ExamPayloadQuestion | null => {
+  if (!payloadMap || !Array.isArray(payloadMap.questions)) {
+    return null;
+  }
+
+  return (
+    payloadMap.questions.find((item) => item.questionId === questionId) ?? null
+  );
+};
+
+const resolveRawQuestionOptions = (question: {
+  optionA: string | null;
+  optionB: string | null;
+  optionC: string | null;
+  optionD: string | null;
+  optionE: string | null;
+}) => ({
+  a: question.optionA,
+  b: question.optionB,
+  c: question.optionC,
+  d: question.optionD,
+  e: question.optionE,
+});
+
+const buildQuestionSnapshot = (input: {
+  question: {
+    id: number | null;
+    questionText: string | null;
+    imageUrl: string | null;
+    optionA: string | null;
+    optionB: string | null;
+    optionC: string | null;
+    optionD: string | null;
+    optionE: string | null;
+    correctAnswer: OptionKey | null;
+    explanation: string | null;
+  };
+  sessionPayloadMap?: ExamPayloadMap | null;
+  selectedOption?: OptionKey | null;
+}) => {
+  const sessionQuestion =
+    input.question.id !== null
+      ? findSessionQuestion(input.sessionPayloadMap, input.question.id)
+      : null;
+
+  if (sessionQuestion) {
+    const displayedCorrectAnswer =
+      sessionQuestion.optionMapOriginalToDisplayed[
+        sessionQuestion.originalCorrectAnswer
+      ] ?? sessionQuestion.originalCorrectAnswer;
+
+    return {
+      id: input.question.id,
+      text: sessionQuestion.questionText,
+      image_url: sessionQuestion.imageUrl ?? input.question.imageUrl ?? null,
+      options: sessionQuestion.displayedOptions,
+      correct_answer: displayedCorrectAnswer,
+      correct_answer_text:
+        sessionQuestion.displayedOptions[displayedCorrectAnswer] ?? null,
+      selected_answer: input.selectedOption ?? null,
+      selected_answer_text:
+        input.selectedOption !== null && input.selectedOption !== undefined
+          ? sessionQuestion.displayedOptions[input.selectedOption] ?? null
+          : null,
+      explanation: sessionQuestion.explanation ?? input.question.explanation ?? null,
+    };
+  }
+
+  const rawOptions = resolveRawQuestionOptions(input.question);
+  const correctAnswer = input.question.correctAnswer ?? null;
+
+  return {
+    id: input.question.id,
+    text: input.question.questionText,
+    image_url: input.question.imageUrl,
+    options: rawOptions,
+    correct_answer: correctAnswer,
+    correct_answer_text: correctAnswer ? rawOptions[correctAnswer] ?? null : null,
+    selected_answer: input.selectedOption ?? null,
+    selected_answer_text:
+      input.selectedOption !== null && input.selectedOption !== undefined
+        ? rawOptions[input.selectedOption] ?? null
+        : null,
+    explanation: input.question.explanation,
+  };
+};
 
 export const createQuestionReport = async (
   req: AuthenticatedRequest,
@@ -76,6 +170,7 @@ export const createQuestionReport = async (
       .select({
         id: questions.id,
         packageId: questions.packageId,
+        examId: questions.examId,
       })
       .from(questions)
       .where(eq(questions.id, questionId))
@@ -87,12 +182,14 @@ export const createQuestionReport = async (
     }
 
     let packageId = questionRow.packageId ?? null;
+    let examId = questionRow.examId ?? null;
 
     if (sessionId) {
       const [session] = await db
         .select({
           id: examSessions.id,
           packageId: examSessions.packageId,
+          examId: examSessions.examId,
           payloadMap: examSessions.payloadMap,
         })
         .from(examSessions)
@@ -118,6 +215,7 @@ export const createQuestionReport = async (
       }
 
       packageId = session.packageId ?? packageId;
+      examId = session.examId ?? examId;
     }
 
     const [report] = await db
@@ -127,6 +225,7 @@ export const createQuestionReport = async (
         questionId,
         sessionId: sessionId ?? null,
         packageId,
+        examId,
         reportText,
         status: "open",
       })
@@ -181,12 +280,15 @@ export const listQuestionReports = async (
         questionText: questions.questionText,
         packageId: examPackages.id,
         packageName: examPackages.name,
+        examId: packageExams.id,
+        examName: packageExams.name,
         sessionId: examSessions.id,
       })
       .from(questionReports)
       .leftJoin(users, eq(questionReports.userId, users.id))
       .leftJoin(questions, eq(questionReports.questionId, questions.id))
       .leftJoin(examPackages, eq(questionReports.packageId, examPackages.id))
+      .leftJoin(packageExams, eq(questionReports.examId, packageExams.id))
       .leftJoin(examSessions, eq(questionReports.sessionId, examSessions.id))
       .where(statusFilter ? eq(questionReports.status, statusFilter) : undefined)
       .orderBy(desc(questionReports.createdAt), desc(questionReports.id));
@@ -205,6 +307,8 @@ export const listQuestionReports = async (
         question_text: row.questionText ?? null,
         package_id: row.packageId,
         package_name: row.packageName ?? null,
+        exam_id: row.examId,
+        exam_name: row.examName ?? null,
         session_id: row.sessionId,
       })),
     );
@@ -237,14 +341,26 @@ export const getQuestionReportDetail = async (
         userEmail: users.email,
         questionId: questions.id,
         questionText: questions.questionText,
+        questionImageUrl: questions.imageUrl,
+        optionA: questions.optionA,
+        optionB: questions.optionB,
+        optionC: questions.optionC,
+        optionD: questions.optionD,
+        optionE: questions.optionE,
+        correctAnswer: questions.correctAnswer,
+        explanation: questions.explanation,
         packageId: examPackages.id,
         packageName: examPackages.name,
+        examId: packageExams.id,
+        examName: packageExams.name,
         sessionId: examSessions.id,
+        payloadMap: examSessions.payloadMap,
       })
       .from(questionReports)
       .leftJoin(users, eq(questionReports.userId, users.id))
       .leftJoin(questions, eq(questionReports.questionId, questions.id))
       .leftJoin(examPackages, eq(questionReports.packageId, examPackages.id))
+      .leftJoin(packageExams, eq(questionReports.examId, packageExams.id))
       .leftJoin(examSessions, eq(questionReports.sessionId, examSessions.id))
       .where(eq(questionReports.id, reportId))
       .limit(1);
@@ -253,6 +369,22 @@ export const getQuestionReportDetail = async (
       res.status(404).json({ message: "Report not found." });
       return;
     }
+
+    const [selectedAnswerRow] =
+      report.sessionId && report.questionId
+        ? await db
+            .select({
+              selectedOption: examAnswers.selectedOption,
+            })
+            .from(examAnswers)
+            .where(
+              and(
+                eq(examAnswers.sessionId, report.sessionId),
+                eq(examAnswers.questionId, report.questionId),
+              ),
+            )
+            .limit(1)
+        : [];
 
     const replies = await db
       .select({
@@ -267,6 +399,23 @@ export const getQuestionReportDetail = async (
       .where(eq(questionReportReplies.reportId, reportId))
       .orderBy(asc(questionReportReplies.createdAt), asc(questionReportReplies.id));
 
+    const questionSnapshot = buildQuestionSnapshot({
+      question: {
+        id: report.questionId,
+        questionText: report.questionText,
+        imageUrl: report.questionImageUrl,
+        optionA: report.optionA,
+        optionB: report.optionB,
+        optionC: report.optionC,
+        optionD: report.optionD,
+        optionE: report.optionE,
+        correctAnswer: report.correctAnswer,
+        explanation: report.explanation,
+      },
+      sessionPayloadMap: (report.payloadMap as ExamPayloadMap | null) ?? null,
+      selectedOption: selectedAnswerRow?.selectedOption ?? null,
+    });
+
     res.status(200).json({
       id: report.id,
       status: report.status,
@@ -278,13 +427,14 @@ export const getQuestionReportDetail = async (
         name: report.userName ?? "Unknown",
         email: report.userEmail ?? "-",
       },
-      question: {
-        id: report.questionId,
-        text: report.questionText ?? null,
-      },
+      question: questionSnapshot,
       package: {
         id: report.packageId,
         name: report.packageName ?? null,
+      },
+      exam: {
+        id: report.examId,
+        name: report.examName ?? null,
       },
       session_id: report.sessionId,
       replies: replies.map((item) => ({
@@ -340,16 +490,29 @@ export const replyQuestionReport = async (
       .select({
         id: questionReports.id,
         reportText: questionReports.reportText,
-        userId: questionReports.userId,
         userName: users.name,
         userEmail: users.email,
+        questionId: questions.id,
         questionText: questions.questionText,
+        questionImageUrl: questions.imageUrl,
+        optionA: questions.optionA,
+        optionB: questions.optionB,
+        optionC: questions.optionC,
+        optionD: questions.optionD,
+        optionE: questions.optionE,
+        correctAnswer: questions.correctAnswer,
+        explanation: questions.explanation,
         packageName: examPackages.name,
+        examName: packageExams.name,
+        sessionId: examSessions.id,
+        payloadMap: examSessions.payloadMap,
       })
       .from(questionReports)
       .innerJoin(users, eq(questionReports.userId, users.id))
       .leftJoin(questions, eq(questionReports.questionId, questions.id))
       .leftJoin(examPackages, eq(questionReports.packageId, examPackages.id))
+      .leftJoin(packageExams, eq(questionReports.examId, packageExams.id))
+      .leftJoin(examSessions, eq(questionReports.sessionId, examSessions.id))
       .where(eq(questionReports.id, reportId))
       .limit(1);
 
@@ -357,6 +520,22 @@ export const replyQuestionReport = async (
       res.status(404).json({ message: "Report not found." });
       return;
     }
+
+    const [selectedAnswerRow] =
+      report.sessionId && report.questionId
+        ? await db
+            .select({
+              selectedOption: examAnswers.selectedOption,
+            })
+            .from(examAnswers)
+            .where(
+              and(
+                eq(examAnswers.sessionId, report.sessionId),
+                eq(examAnswers.questionId, report.questionId),
+              ),
+            )
+            .limit(1)
+        : [];
 
     const [reply] = await db
       .insert(questionReportReplies)
@@ -380,10 +559,35 @@ export const replyQuestionReport = async (
       })
       .where(eq(questionReports.id, reportId));
 
+    const questionSnapshot = buildQuestionSnapshot({
+      question: {
+        id: report.questionId,
+        questionText: report.questionText,
+        imageUrl: report.questionImageUrl,
+        optionA: report.optionA,
+        optionB: report.optionB,
+        optionC: report.optionC,
+        optionD: report.optionD,
+        optionE: report.optionE,
+        correctAnswer: report.correctAnswer,
+        explanation: report.explanation,
+      },
+      sessionPayloadMap: (report.payloadMap as ExamPayloadMap | null) ?? null,
+      selectedOption: selectedAnswerRow?.selectedOption ?? null,
+    });
+
     const emailPayload = buildQuestionReportReplyEmail({
       userName: report.userName,
       packageName: report.packageName ?? null,
-      questionText: report.questionText ?? null,
+      examName: report.examName ?? null,
+      questionText: questionSnapshot.text ?? null,
+      questionImageUrl: questionSnapshot.image_url ?? null,
+      options: questionSnapshot.options,
+      correctAnswerLabel: questionSnapshot.correct_answer ?? null,
+      correctAnswerText: questionSnapshot.correct_answer_text ?? null,
+      selectedAnswerLabel: questionSnapshot.selected_answer ?? null,
+      selectedAnswerText: questionSnapshot.selected_answer_text ?? null,
+      explanation: questionSnapshot.explanation ?? null,
       reportText: report.reportText,
       adminReply: messageText,
     });

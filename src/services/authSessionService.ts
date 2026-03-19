@@ -14,6 +14,7 @@ export interface AuthUserRecord {
   phone: string;
   targetScore: number | null;
   isPremium: boolean;
+  authProvider?: "email" | "google" | "both";
   accountStatus?: "active" | "inactive";
   statusNote?: string | null;
 }
@@ -30,6 +31,7 @@ export const sanitizeAuthUser = (user: AuthUserRecord) => ({
   phone: user.phone,
   target_score: user.targetScore ?? 0,
   is_premium: user.isPremium,
+  auth_provider: user.authProvider ?? "email",
   account_status: user.accountStatus ?? "active",
   status_note: user.statusNote ?? null,
 });

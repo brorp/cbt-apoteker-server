@@ -47,10 +47,7 @@ import {
 
 const DEFAULT_PAYMENT_METHOD = "gopay";
 
-const PAYMENT_METHODS = new Set([
-  "gopay",
-  "bank_transfer",
-]);
+const PAYMENT_METHODS = new Set(["gopay"]);
 
 type TransactionViewer = "user" | "admin";
 
@@ -517,7 +514,7 @@ export const createTransactionOrder = async (input: {
   const paymentMethod = normalizePaymentMethod(input.paymentMethod);
   if (input.paymentMethod !== undefined && paymentMethod === null) {
     throw new PaymentServiceError(
-      "Unsupported payment_method. Allowed values: gopay, bank_transfer.",
+      "Unsupported payment_method. Allowed values: gopay.",
       400,
     );
   }

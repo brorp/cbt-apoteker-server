@@ -25,6 +25,11 @@ export const userAccountStatusEnum = pgEnum("user_account_status", [
   "active",
   "inactive",
 ]);
+export const userAuthProviderEnum = pgEnum("user_auth_provider", [
+  "email",
+  "google",
+  "both",
+]);
 export const optionKeyEnum = pgEnum("option_key", ["a", "b", "c", "d", "e"]);
 export const examSessionStatusEnum = pgEnum("exam_session_status", [
   "ongoing",
@@ -74,6 +79,7 @@ export interface ExamPayloadQuestion {
   questionId: number;
   order: number;
   questionText: string;
+  imageUrl?: string | null;
   displayedOptions: Record<OptionKey, string>;
   optionMapOriginalToDisplayed: Record<OptionKey, OptionKey>;
   optionMapDisplayedToOriginal: Record<OptionKey, OptionKey>;
@@ -97,7 +103,9 @@ export const users = pgTable("users", {
   role: userRoleEnum("role").notNull().default("user"),
   name: varchar("name", { length: 150 }).notNull(),
   email: varchar("email", { length: 255 }).notNull().unique(),
-  password: text("password").notNull(),
+  password: text("password"),
+  authProvider: userAuthProviderEnum("auth_provider").notNull().default("email"),
+  googleUserId: varchar("google_user_id", { length: 255 }).unique(),
   education: varchar("education", { length: 150 }).notNull(),
   schoolOrigin: varchar("school_origin", { length: 255 }).notNull(),
   examPurpose: examPurposeEnum("exam_purpose").notNull(),
@@ -153,9 +161,27 @@ export const examPackages = pgTable("exam_packages", {
   description: text("description").notNull(),
   price: integer("price").notNull(),
   features: text("features").notNull(),
-  questionCount: integer("question_count").notNull().default(50),
+  questionCount: integer("question_count").notNull().default(0),
   sessionLimit: integer("session_limit"),
   validityDays: integer("validity_days"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const packageExams = pgTable("package_exams", {
+  id: serial("id").primaryKey(),
+  packageId: integer("package_id")
+    .notNull()
+    .references(() => examPackages.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 180 }).notNull(),
+  description: text("description").notNull().default(""),
+  questionCount: integer("question_count").notNull().default(50),
+  sortOrder: integer("sort_order").notNull().default(0),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -170,7 +196,11 @@ export const questions = pgTable("questions", {
   packageId: integer("package_id").references(() => examPackages.id, {
     onDelete: "set null",
   }),
+  examId: integer("exam_id").references(() => packageExams.id, {
+    onDelete: "set null",
+  }),
   questionText: text("question_text").notNull(),
+  imageUrl: text("image_url"),
   optionA: text("option_a").notNull(),
   optionB: text("option_b").notNull(),
   optionC: text("option_c").notNull(),
@@ -291,6 +321,9 @@ export const examSessions = pgTable("exam_sessions", {
   packageId: integer("package_id").references(() => examPackages.id, {
     onDelete: "set null",
   }),
+  examId: integer("exam_id").references(() => packageExams.id, {
+    onDelete: "set null",
+  }),
   attemptNumber: integer("attempt_number").notNull().default(1),
   startTime: timestamp("start_time", { withTimezone: true }).notNull(),
   durationMinutes: integer("duration_minutes"),
@@ -347,6 +380,9 @@ export const questionReports = pgTable("question_reports", {
   packageId: integer("package_id").references(() => examPackages.id, {
     onDelete: "set null",
   }),
+  examId: integer("exam_id").references(() => packageExams.id, {
+    onDelete: "set null",
+  }),
   status: questionReportStatusEnum("status").notNull().default("open"),
   reportText: text("report_text").notNull(),
   lastAdminReplyAt: timestamp("last_admin_reply_at", { withTimezone: true }),
@@ -369,6 +405,23 @@ export const questionReportReplies = pgTable("question_report_replies", {
   authorRole: questionReportAuthorRoleEnum("author_role").notNull(),
   messageText: text("message_text").notNull(),
   emailedAt: timestamp("emailed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  email: varchar("email", { length: 255 }).notNull(),
+  tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

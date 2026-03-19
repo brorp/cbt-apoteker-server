@@ -36,6 +36,7 @@ export const profile = async (
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        authProvider: users.authProvider,
         accountStatus: users.accountStatus,
         statusNote: users.statusNote,
       })
@@ -69,6 +70,7 @@ export const profile = async (
       phone: user.phone,
       target_score: user.targetScore ?? 0,
       is_premium: user.isPremium,
+      auth_provider: user.authProvider,
       account_status: user.accountStatus,
       status_note: user.statusNote ?? null,
     });

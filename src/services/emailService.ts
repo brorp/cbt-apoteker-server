@@ -88,16 +88,37 @@ export const sendEmail = async (
 export const buildQuestionReportReplyEmail = (input: {
   userName: string;
   packageName: string | null;
+  examName: string | null;
   questionText: string | null;
+  questionImageUrl?: string | null;
+  options?: Record<string, string | null | undefined>;
+  correctAnswerLabel?: string | null;
+  correctAnswerText?: string | null;
+  selectedAnswerLabel?: string | null;
+  selectedAnswerText?: string | null;
+  explanation?: string | null;
   reportText: string;
   adminReply: string;
 }) => {
   const packageLine = input.packageName
     ? `Paket: ${input.packageName}`
     : "Paket: -";
+  const examLine = input.examName ? `Ujian: ${input.examName}` : "Ujian: -";
   const questionLine = input.questionText
     ? `Soal: ${input.questionText}`
     : "Soal: -";
+  const optionLines = Object.entries(input.options ?? {})
+    .map(([key, value]) => `${key.toUpperCase()}. ${value ?? "-"}`)
+    .join("\n");
+  const correctLine = input.correctAnswerLabel
+    ? `Jawaban benar: ${input.correctAnswerLabel.toUpperCase()}${input.correctAnswerText ? ` - ${input.correctAnswerText}` : ""}`
+    : "Jawaban benar: -";
+  const selectedLine = input.selectedAnswerLabel
+    ? `Jawaban peserta: ${input.selectedAnswerLabel.toUpperCase()}${input.selectedAnswerText ? ` - ${input.selectedAnswerText}` : ""}`
+    : "Jawaban peserta: -";
+  const explanationLine = input.explanation?.trim()
+    ? input.explanation.trim()
+    : "-";
 
   return {
     subject: "Balasan Admin untuk Report Soal Anda",
@@ -106,7 +127,18 @@ export const buildQuestionReportReplyEmail = (input: {
       "",
       "Admin telah membalas report soal Anda.",
       packageLine,
+      examLine,
       questionLine,
+      input.questionImageUrl ? `Gambar soal: ${input.questionImageUrl}` : null,
+      "",
+      "Opsi jawaban:",
+      optionLines || "-",
+      "",
+      correctLine,
+      selectedLine,
+      "",
+      "Pembahasan:",
+      explanationLine,
       "",
       "Report Anda:",
       input.reportText,
@@ -123,8 +155,27 @@ export const buildQuestionReportReplyEmail = (input: {
         <p>Admin telah membalas report soal Anda.</p>
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:16px;margin:16px 0">
           <p style="margin:0 0 8px"><strong>${packageLine}</strong></p>
+          <p style="margin:0 0 8px"><strong>${examLine}</strong></p>
           <p style="margin:0">${questionLine}</p>
         </div>
+        ${
+          input.questionImageUrl
+            ? `<p><strong>Gambar Soal:</strong> <a href="${input.questionImageUrl}">${input.questionImageUrl}</a></p>`
+            : ""
+        }
+        <p><strong>Opsi Jawaban:</strong></p>
+        <ul>
+          ${Object.entries(input.options ?? {})
+            .map(
+              ([key, value]) =>
+                `<li><strong>${key.toUpperCase()}.</strong> ${value ?? "-"}</li>`,
+            )
+            .join("")}
+        </ul>
+        <p><strong>${correctLine}</strong></p>
+        <p><strong>${selectedLine}</strong></p>
+        <p><strong>Pembahasan:</strong></p>
+        <p>${explanationLine}</p>
         <p><strong>Report Anda:</strong></p>
         <p>${input.reportText}</p>
         <p><strong>Balasan Admin:</strong></p>
@@ -230,6 +281,69 @@ export const buildRegistrationOtpEmail = (input: { otpCode: string }) => ({
                       </tbody>
                     </table>
                   </td>
+                </tr>
+              </tbody>
+            </table>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>`,
+});
+
+export const buildForgotPasswordEmail = (input: {
+  userName: string;
+  resetLink: string;
+  expiresInMinutes: number;
+}) => ({
+  subject: "Reset Password Akun KSUKAI",
+  text: [
+    `Halo ${input.userName},`,
+    "",
+    "Kami menerima permintaan untuk mereset password akun Anda.",
+    "Klik link berikut untuk membuat password baru:",
+    input.resetLink,
+    "",
+    `Link ini berlaku selama ${input.expiresInMinutes} menit.`,
+    "Jika Anda tidak meminta reset password, abaikan email ini.",
+    "",
+    "Email ini dikirim otomatis, mohon tidak membalas email ini.",
+    "© 2026 Kumpulan Soal UKAI",
+  ].join("\n"),
+  html: `<!DOCTYPE html>
+<html dir="ltr" lang="en">
+  <head>
+    <meta content="width=device-width" name="viewport" />
+    <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
+    <meta name="x-apple-disable-message-reformatting" />
+    <meta content="IE=edge" http-equiv="X-UA-Compatible" />
+    <meta content="telephone=no,address=no,email=no,date=no,url=no" name="format-detection" />
+  </head>
+  <body style="background:#f4f8ff;margin:0;padding:24px 12px;">
+    <table border="0" width="100%" cellpadding="0" cellspacing="0" role="presentation" align="center">
+      <tbody>
+        <tr>
+          <td align="center">
+            <table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="max-width:600px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Roboto','Helvetica Neue',sans-serif;">
+              <tbody>
+                <tr>
+                  <td style="background:#ffffff;border-radius:24px;padding:40px 36px;box-shadow:0 24px 64px rgba(15,23,42,0.08);">
+                    <h2 style="margin:0 0 12px;color:#111827;font-size:28px;line-height:1.2;">Reset Password Akun Anda</h2>
+                    <p style="margin:0 0 12px;color:#475569;font-size:15px;line-height:1.7;">Halo <strong>${input.userName}</strong>, kami menerima permintaan untuk mereset password akun KSUKAI Anda.</p>
+                    <p style="margin:0 0 28px;color:#475569;font-size:15px;line-height:1.7;">Klik tombol berikut untuk membuat password baru. Link ini hanya berlaku selama <strong>${input.expiresInMinutes} menit</strong>.</p>
+                    <div style="margin:0 0 28px;">
+                      <a href="${input.resetLink}" style="display:inline-block;background:#0ea5e9;color:#ffffff;text-decoration:none;font-weight:700;padding:14px 22px;border-radius:14px;">Buat Password Baru</a>
+                    </div>
+                    <p style="margin:0 0 8px;color:#64748b;font-size:13px;line-height:1.6;">Jika tombol tidak bekerja, salin link berikut ke browser Anda:</p>
+                    <p style="margin:0 0 28px;word-break:break-all;color:#0f172a;font-size:13px;line-height:1.6;">${input.resetLink}</p>
+                    <div style="padding-top:24px;border-top:1px solid #e2e8f0;">
+                      <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.6;">Jika Anda tidak meminta reset password, abaikan email ini. Email ini dikirim otomatis, mohon tidak membalas email ini.</p>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top:18px;color:#94a3b8;font-size:12px;">© 2026 Kumpulan Soal UKAI</td>
                 </tr>
               </tbody>
             </table>

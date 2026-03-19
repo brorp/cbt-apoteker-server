@@ -20,9 +20,12 @@ import {
 } from "../controllers/adminPaymentController.js";
 import {
   archiveAdminPackage,
+  archiveAdminPackageExam,
   createAdminPackage,
+  createAdminPackageExam,
   listAdminPackages,
   updateAdminPackage,
+  updateAdminPackageExam,
 } from "../controllers/adminPackageController.js";
 import {
   getQuestionReportDetail,
@@ -49,6 +52,9 @@ adminRoutes.get("/packages", listAdminPackages);
 adminRoutes.post("/packages", createAdminPackage);
 adminRoutes.put("/packages/:id", updateAdminPackage);
 adminRoutes.patch("/packages/:id/archive", archiveAdminPackage);
+adminRoutes.post("/packages/:packageId/exams", createAdminPackageExam);
+adminRoutes.put("/exams/:id", updateAdminPackageExam);
+adminRoutes.patch("/exams/:id/archive", archiveAdminPackageExam);
 
 adminRoutes.get("/questions", listQuestions);
 adminRoutes.post("/questions", createQuestion);

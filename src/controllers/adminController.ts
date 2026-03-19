@@ -1,11 +1,12 @@
 import type { Response } from "express";
-import { and, desc, eq, ilike, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import { syncDefaultExamPackages } from "../db/defaultPackages.js";
 import {
   activityLogs,
   examPackages,
+  packageExams,
   examSessions,
   questions,
   transactions,
@@ -27,6 +28,15 @@ import {
   getUploadedBinaryFile,
   isUploadRequestError,
 } from "../utils/requestUpload.js";
+import {
+  isMultipartFormError,
+  parseMultipartForm,
+} from "../utils/multipartForm.js";
+import {
+  deleteQuestionImage,
+  QuestionImageError,
+  saveQuestionImage,
+} from "../services/questionImageService.js";
 
 type QuestionPayload = {
   question_text?: string;
@@ -38,8 +48,12 @@ type QuestionPayload = {
   correct_answer?: OptionKey;
   explanation?: string;
   is_active?: unknown;
+  exam_id?: unknown;
+  examId?: unknown;
   package_id?: unknown;
   packageId?: unknown;
+  remove_image?: unknown;
+  removeImage?: unknown;
 };
 
 const isValidOptionKey = (value: unknown): value is OptionKey =>
@@ -83,27 +97,55 @@ const normalizePositiveInteger = (value: unknown): number | null => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
-const getQuestionPackage = async (packageId: number) => {
-  const [questionPackage] = await db
+const getQuestionExam = async (examId: number) => {
+  const [questionExam] = await db
     .select({
-      id: examPackages.id,
-      name: examPackages.name,
-      questionCount: examPackages.questionCount,
-      isActive: examPackages.isActive,
+      id: packageExams.id,
+      packageId: examPackages.id,
+      name: packageExams.name,
+      packageName: examPackages.name,
+      questionCount: packageExams.questionCount,
+      isActive: packageExams.isActive,
     })
-    .from(examPackages)
-    .where(eq(examPackages.id, packageId))
+    .from(packageExams)
+    .innerJoin(examPackages, eq(packageExams.packageId, examPackages.id))
+    .where(eq(packageExams.id, examId))
     .limit(1);
 
-  return questionPackage ?? null;
+  return questionExam ?? null;
+};
+
+const resolveQuestionExamId = async (input: {
+  examId: number | null;
+  packageId: number | null;
+}) => {
+  if (input.examId) {
+    return input.examId;
+  }
+
+  if (!input.packageId) {
+    return null;
+  }
+
+  const [exam] = await db
+    .select({ id: packageExams.id })
+    .from(packageExams)
+    .where(eq(packageExams.packageId, input.packageId))
+    .orderBy(asc(packageExams.sortOrder), asc(packageExams.id))
+    .limit(1);
+
+  return exam?.id ?? null;
 };
 
 const toQuestionResponse = (question: {
   id: number;
+  examId: number | null;
+  examName: string | null;
   packageId: number | null;
   packageName: string | null;
   packageQuestionCount: number | null;
   questionText: string;
+  imageUrl: string | null;
   optionA: string;
   optionB: string;
   optionC: string;
@@ -114,10 +156,13 @@ const toQuestionResponse = (question: {
   isActive: boolean;
 }) => ({
   id: question.id,
+  exam_id: question.examId,
+  exam_name: question.examName,
   package_id: question.packageId,
   package_name: question.packageName,
   package_question_count: question.packageQuestionCount,
   question_text: question.questionText,
+  image_url: question.imageUrl,
   option_a: question.optionA,
   option_b: question.optionB,
   option_c: question.optionC,
@@ -305,6 +350,8 @@ export const listExamResults = async (
         userName: users.name,
         packageId: examSessions.packageId,
         packageName: examPackages.name,
+        examId: examSessions.examId,
+        examName: packageExams.name,
         attemptNumber: examSessions.attemptNumber,
         status: examSessions.status,
         score: examSessions.score,
@@ -316,6 +363,7 @@ export const listExamResults = async (
       .from(examSessions)
       .leftJoin(users, eq(examSessions.userId, users.id))
       .leftJoin(examPackages, eq(examSessions.packageId, examPackages.id))
+      .leftJoin(packageExams, eq(examSessions.examId, packageExams.id))
       .orderBy(desc(examSessions.startTime));
 
     res.status(200).json(
@@ -331,6 +379,8 @@ export const listExamResults = async (
           user_name: row.userName ?? "Unknown",
           package_id: row.packageId,
           package_name: row.packageName ?? null,
+          exam_id: row.examId,
+          exam_name: row.examName ?? null,
           attempt_number: row.attemptNumber,
           status: row.status,
           score: row.score ?? 0,
@@ -370,6 +420,7 @@ export const listQuestions = async (
 ): Promise<void> => {
   try {
     await syncDefaultExamPackages();
+    const examId = normalizePositiveInteger(req.query.exam_id ?? req.query.examId);
     const packageId = normalizePositiveInteger(req.query.package_id ?? req.query.packageId);
     const isActive =
       req.query.is_active !== undefined
@@ -384,6 +435,9 @@ export const listQuestions = async (
     }
 
     const conditions = [];
+    if (examId) {
+      conditions.push(eq(questions.examId, examId));
+    }
     if (packageId) {
       conditions.push(eq(questions.packageId, packageId));
     }
@@ -396,6 +450,7 @@ export const listQuestions = async (
         or(
           ilike(questions.questionText, pattern),
           ilike(questions.explanation, pattern),
+          ilike(packageExams.name, pattern),
           ilike(examPackages.name, pattern),
         ),
       );
@@ -404,10 +459,13 @@ export const listQuestions = async (
     const rows = await db
       .select({
         id: questions.id,
+        examId: questions.examId,
+        examName: packageExams.name,
         packageId: questions.packageId,
         packageName: examPackages.name,
         packageQuestionCount: examPackages.questionCount,
         questionText: questions.questionText,
+        imageUrl: questions.imageUrl,
         optionA: questions.optionA,
         optionB: questions.optionB,
         optionC: questions.optionC,
@@ -418,6 +476,7 @@ export const listQuestions = async (
         isActive: questions.isActive,
       })
       .from(questions)
+      .leftJoin(packageExams, eq(questions.examId, packageExams.id))
       .leftJoin(examPackages, eq(questions.packageId, examPackages.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(questions.id));
@@ -533,15 +592,40 @@ export const createQuestion = async (
   req: AuthenticatedRequest,
   res: Response,
 ): Promise<void> => {
+  let uploadedImageUrl: string | null = null;
+
   try {
     await syncDefaultExamPackages();
 
-    const body = req.body as QuestionPayload;
+    const isMultipart =
+      typeof req.headers["content-type"] === "string" &&
+      req.headers["content-type"].includes("multipart/form-data");
+
+    let body: QuestionPayload;
+    let imageFile:
+      | Awaited<ReturnType<typeof parseMultipartForm>>["files"][number]
+      | null = null;
+
+    if (isMultipart) {
+      const form = await parseMultipartForm(req);
+      body = form.fields as QuestionPayload;
+      imageFile =
+        form.files.find(
+          (item) => item.fieldName === "image" || item.fieldName === "question_image",
+        ) ?? null;
+    } else {
+      body = req.body as QuestionPayload;
+    }
+
     const packageId = normalizePositiveInteger(body.package_id ?? body.packageId);
+    const examId = await resolveQuestionExamId({
+      examId: normalizePositiveInteger(body.exam_id ?? body.examId),
+      packageId,
+    });
     const isActive = normalizeBoolean(body.is_active) ?? false;
 
     if (
-      !packageId ||
+      !examId ||
       !body.question_text ||
       !body.option_a ||
       !body.option_b ||
@@ -561,31 +645,37 @@ export const createQuestion = async (
       });
       res.status(400).json({
         message:
-          "Invalid payload. Required fields: package_id, question_text, option_a-e, correct_answer, explanation.",
+          "Invalid payload. Required fields: exam_id, question_text, option_a-e, correct_answer, explanation.",
       });
       return;
     }
 
-    const questionPackage = await getQuestionPackage(packageId);
-    if (!questionPackage || !questionPackage.isActive) {
+    const questionExam = await getQuestionExam(examId);
+    if (!questionExam || !questionExam.isActive) {
       await logActivity({
         actorUserId: req.user?.userId ?? null,
         actorRole: req.user?.role ?? null,
         action: "ADMIN_QUESTION_CREATE",
         entity: "QUESTION",
         status: "failed",
-        message: "Create question failed: invalid package id.",
-        metadata: { packageId },
+        message: "Create question failed: invalid exam id.",
+        metadata: { examId, packageId },
       });
-      res.status(400).json({ message: "Invalid package_id." });
+      res.status(400).json({ message: "Invalid exam_id." });
       return;
+    }
+
+    if (imageFile) {
+      uploadedImageUrl = await saveQuestionImage(imageFile);
     }
 
     const [created] = await db
       .insert(questions)
       .values({
-        packageId,
+        packageId: questionExam.packageId,
+        examId,
         questionText: body.question_text.trim(),
+        imageUrl: uploadedImageUrl,
         optionA: body.option_a.trim(),
         optionB: body.option_b.trim(),
         optionC: body.option_c.trim(),
@@ -597,8 +687,10 @@ export const createQuestion = async (
       })
       .returning({
         id: questions.id,
+        examId: questions.examId,
         packageId: questions.packageId,
         questionText: questions.questionText,
+        imageUrl: questions.imageUrl,
         optionA: questions.optionA,
         optionB: questions.optionB,
         optionC: questions.optionC,
@@ -612,8 +704,9 @@ export const createQuestion = async (
     res.status(201).json(
       toQuestionResponse({
         ...created,
-        packageName: questionPackage.name,
-        packageQuestionCount: questionPackage.questionCount,
+        examName: questionExam.name,
+        packageName: questionExam.packageName,
+        packageQuestionCount: questionExam.questionCount,
       }),
     );
     await logActivity({
@@ -625,12 +718,17 @@ export const createQuestion = async (
       status: "success",
       message: "Question created.",
       metadata: {
-        packageId,
-        packageName: questionPackage.name,
+        packageId: questionExam.packageId,
+        packageName: questionExam.packageName,
+        examId,
+        examName: questionExam.name,
       },
     });
   } catch (error) {
     console.error("createQuestion error:", error);
+    if (uploadedImageUrl) {
+      await deleteQuestionImage(uploadedImageUrl);
+    }
     await logActivity({
       actorUserId: req.user?.userId ?? null,
       actorRole: req.user?.role ?? null,
@@ -639,6 +737,15 @@ export const createQuestion = async (
       status: "failed",
       message: "Create question failed due to internal server error.",
     });
+    if (isMultipartFormError(error)) {
+      res.status(error.statusCode).json({ message: error.message });
+      return;
+    }
+
+    if (error instanceof QuestionImageError) {
+      res.status(error.status).json({ message: error.message });
+      return;
+    }
     res.status(500).json({ message: "Internal server error." });
   }
 };
@@ -647,6 +754,8 @@ export const updateQuestion = async (
   req: AuthenticatedRequest,
   res: Response,
 ): Promise<void> => {
+  let uploadedImageUrl: string | null = null;
+
   try {
     await syncDefaultExamPackages();
 
@@ -665,10 +774,56 @@ export const updateQuestion = async (
       return;
     }
 
-    const body = req.body as QuestionPayload;
+    const isMultipart =
+      typeof req.headers["content-type"] === "string" &&
+      req.headers["content-type"].includes("multipart/form-data");
+
+    let body: QuestionPayload;
+    let imageFile:
+      | Awaited<ReturnType<typeof parseMultipartForm>>["files"][number]
+      | null = null;
+
+    if (isMultipart) {
+      const form = await parseMultipartForm(req);
+      body = form.fields as QuestionPayload;
+      imageFile =
+        form.files.find(
+          (item) => item.fieldName === "image" || item.fieldName === "question_image",
+        ) ?? null;
+    } else {
+      body = req.body as QuestionPayload;
+    }
+
+    const [existingQuestion] = await db
+      .select({
+        id: questions.id,
+        examId: questions.examId,
+        packageId: questions.packageId,
+        imageUrl: questions.imageUrl,
+      })
+      .from(questions)
+      .where(eq(questions.id, id))
+      .limit(1);
+
+    if (!existingQuestion) {
+      await logActivity({
+        actorUserId: req.user?.userId ?? null,
+        actorRole: req.user?.role ?? null,
+        action: "ADMIN_QUESTION_UPDATE",
+        entity: "QUESTION",
+        entityId: id,
+        status: "failed",
+        message: "Update question failed: not found.",
+      });
+      res.status(404).json({ message: "Question not found." });
+      return;
+    }
+
     const updates: Partial<{
+      examId: number;
       packageId: number;
       questionText: string;
+      imageUrl: string | null;
       optionA: string;
       optionB: string;
       optionC: string;
@@ -679,12 +834,18 @@ export const updateQuestion = async (
       isActive: boolean;
       updatedAt: Date;
     }> = {};
-    let responsePackage: Awaited<ReturnType<typeof getQuestionPackage>> | null = null;
+    let responseExam: Awaited<ReturnType<typeof getQuestionExam>> | null = null;
 
-    const packageIdInput = body.package_id ?? body.packageId;
-    if (packageIdInput !== undefined) {
-      const packageId = normalizePositiveInteger(packageIdInput);
-      if (!packageId) {
+    const requestedPackageId = normalizePositiveInteger(
+      body.package_id ?? body.packageId,
+    );
+    const requestedExamId = await resolveQuestionExamId({
+      examId: normalizePositiveInteger(body.exam_id ?? body.examId),
+      packageId: requestedPackageId,
+    });
+
+    if (body.exam_id !== undefined || body.examId !== undefined || requestedPackageId) {
+      if (!requestedExamId) {
         await logActivity({
           actorUserId: req.user?.userId ?? null,
           actorRole: req.user?.role ?? null,
@@ -692,15 +853,15 @@ export const updateQuestion = async (
           entity: "QUESTION",
           entityId: id,
           status: "failed",
-          message: "Update question failed: invalid package id.",
-          metadata: { packageId: packageIdInput },
+          message: "Update question failed: invalid exam id.",
+          metadata: { requestedExamId, requestedPackageId },
         });
-        res.status(400).json({ message: "Invalid package_id." });
+        res.status(400).json({ message: "Invalid exam_id." });
         return;
       }
 
-      responsePackage = await getQuestionPackage(packageId);
-      if (!responsePackage || !responsePackage.isActive) {
+      responseExam = await getQuestionExam(requestedExamId);
+      if (!responseExam || !responseExam.isActive) {
         await logActivity({
           actorUserId: req.user?.userId ?? null,
           actorRole: req.user?.role ?? null,
@@ -708,14 +869,15 @@ export const updateQuestion = async (
           entity: "QUESTION",
           entityId: id,
           status: "failed",
-          message: "Update question failed: package not found.",
-          metadata: { packageId },
+          message: "Update question failed: exam not found.",
+          metadata: { requestedExamId },
         });
-        res.status(400).json({ message: "Invalid package_id." });
+        res.status(400).json({ message: "Invalid exam_id." });
         return;
       }
 
-      updates.packageId = packageId;
+      updates.examId = requestedExamId;
+      updates.packageId = responseExam.packageId;
     }
 
     if (typeof body.question_text === "string") updates.questionText = body.question_text;
@@ -745,6 +907,14 @@ export const updateQuestion = async (
 
       updates.isActive = isActive;
     }
+    if (imageFile) {
+      uploadedImageUrl = await saveQuestionImage(imageFile);
+      updates.imageUrl = uploadedImageUrl;
+    } else if (
+      normalizeBoolean(body.remove_image ?? body.removeImage) === true
+    ) {
+      updates.imageUrl = null;
+    }
     updates.updatedAt = new Date();
 
     const isOnlyUpdatedAt = Object.keys(updates).length === 1;
@@ -768,8 +938,10 @@ export const updateQuestion = async (
       .where(eq(questions.id, id))
       .returning({
         id: questions.id,
+        examId: questions.examId,
         packageId: questions.packageId,
         questionText: questions.questionText,
+        imageUrl: questions.imageUrl,
         optionA: questions.optionA,
         optionB: questions.optionB,
         optionC: questions.optionC,
@@ -780,29 +952,22 @@ export const updateQuestion = async (
         isActive: questions.isActive,
       });
 
-    if (!updated) {
-      await logActivity({
-        actorUserId: req.user?.userId ?? null,
-        actorRole: req.user?.role ?? null,
-        action: "ADMIN_QUESTION_UPDATE",
-        entity: "QUESTION",
-        entityId: id,
-        status: "failed",
-        message: "Update question failed: not found.",
-      });
-      res.status(404).json({ message: "Question not found." });
-      return;
+    if (!responseExam && updated.examId) {
+      responseExam = await getQuestionExam(updated.examId);
     }
 
-    if (!responsePackage && updated.packageId) {
-      responsePackage = await getQuestionPackage(updated.packageId);
+    if (uploadedImageUrl && existingQuestion.imageUrl && existingQuestion.imageUrl !== uploadedImageUrl) {
+      await deleteQuestionImage(existingQuestion.imageUrl);
+    } else if (updates.imageUrl === null && existingQuestion.imageUrl) {
+      await deleteQuestionImage(existingQuestion.imageUrl);
     }
 
     res.status(200).json(
       toQuestionResponse({
         ...updated,
-        packageName: responsePackage?.name ?? null,
-        packageQuestionCount: responsePackage?.questionCount ?? null,
+        examName: responseExam?.name ?? null,
+        packageName: responseExam?.packageName ?? null,
+        packageQuestionCount: responseExam?.questionCount ?? null,
       }),
     );
     await logActivity({
@@ -815,11 +980,16 @@ export const updateQuestion = async (
       message: "Question updated.",
       metadata: {
         packageId: updated.packageId,
-        packageName: responsePackage?.name ?? null,
+        packageName: responseExam?.packageName ?? null,
+        examId: updated.examId,
+        examName: responseExam?.name ?? null,
       },
     });
   } catch (error) {
     console.error("updateQuestion error:", error);
+    if (uploadedImageUrl) {
+      await deleteQuestionImage(uploadedImageUrl);
+    }
     await logActivity({
       actorUserId: req.user?.userId ?? null,
       actorRole: req.user?.role ?? null,
@@ -828,6 +998,15 @@ export const updateQuestion = async (
       status: "failed",
       message: "Update question failed due to internal server error.",
     });
+    if (isMultipartFormError(error)) {
+      res.status(error.statusCode).json({ message: error.message });
+      return;
+    }
+
+    if (error instanceof QuestionImageError) {
+      res.status(error.status).json({ message: error.message });
+      return;
+    }
     res.status(500).json({ message: "Internal server error." });
   }
 };
@@ -855,7 +1034,7 @@ export const deleteQuestion = async (
     const [deleted] = await db
       .delete(questions)
       .where(eq(questions.id, id))
-      .returning({ id: questions.id });
+      .returning({ id: questions.id, imageUrl: questions.imageUrl });
 
     if (!deleted) {
       await logActivity({
@@ -871,6 +1050,7 @@ export const deleteQuestion = async (
       return;
     }
 
+    await deleteQuestionImage(deleted.imageUrl);
     res.status(200).json({ message: "Question deleted.", id: deleted.id });
     await logActivity({
       actorUserId: req.user?.userId ?? null,
@@ -938,14 +1118,23 @@ export const importQuestions = async (
         uploadedFile.fields.package_id ??
         uploadedFile.fields.packageId,
     );
-    if (!packageId) {
-      res.status(400).json({ message: "package_id is required." });
+    const examId = await resolveQuestionExamId({
+      examId: normalizePositiveInteger(
+        req.query.exam_id ??
+          req.query.examId ??
+          uploadedFile.fields.exam_id ??
+          uploadedFile.fields.examId,
+      ),
+      packageId,
+    });
+    if (!examId) {
+      res.status(400).json({ message: "exam_id is required." });
       return;
     }
 
-    const questionPackage = await getQuestionPackage(packageId);
-    if (!questionPackage || !questionPackage.isActive) {
-      res.status(400).json({ message: "Invalid package_id." });
+    const questionExam = await getQuestionExam(examId);
+    if (!questionExam || !questionExam.isActive) {
+      res.status(400).json({ message: "Invalid exam_id." });
       return;
     }
 
@@ -961,7 +1150,8 @@ export const importQuestions = async (
         .insert(questions)
         .values(
           parsedQuestions.map((item) => ({
-            packageId,
+            packageId: questionExam.packageId,
+            examId,
             questionText: item.questionText,
             optionA: item.optionA,
             optionB: item.optionB,
@@ -979,8 +1169,10 @@ export const importQuestions = async (
     res.status(201).json({
       message: "Question bank imported successfully.",
       imported_count: importedRows.length,
-      package_id: packageId,
-      package_name: questionPackage.name,
+      package_id: questionExam.packageId,
+      package_name: questionExam.packageName,
+      exam_id: examId,
+      exam_name: questionExam.name,
       is_active: isActive,
       file_name: uploadedFile.originalName,
       question_ids: importedRows.map((item) => item.id),
@@ -997,8 +1189,10 @@ export const importQuestions = async (
         fileName: uploadedFile.originalName,
         importedCount: importedRows.length,
         isActive,
-        packageId,
-        packageName: questionPackage.name,
+        packageId: questionExam.packageId,
+        packageName: questionExam.packageName,
+        examId,
+        examName: questionExam.name,
       },
     });
   } catch (error) {

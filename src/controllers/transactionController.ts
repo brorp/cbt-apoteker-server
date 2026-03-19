@@ -4,7 +4,7 @@ import { asc, eq } from "drizzle-orm";
 import { getMidtransConfig } from "../config/midtrans.js";
 import { db } from "../config/db.js";
 import { syncDefaultExamPackages } from "../db/defaultPackages.js";
-import { examPackages } from "../db/schema.js";
+import { examPackages, packageExams } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import {
   PaymentServiceError,
@@ -73,7 +73,7 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
   try {
     await syncDefaultExamPackages();
 
-    const rows = await db
+    const packages = await db
       .select({
         id: examPackages.id,
         name: examPackages.name,
@@ -88,14 +88,51 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
       .where(eq(examPackages.isActive, true))
       .orderBy(asc(examPackages.price), asc(examPackages.questionCount), asc(examPackages.id));
 
+    const exams = packages.length
+      ? await db
+          .select({
+            id: packageExams.id,
+            packageId: packageExams.packageId,
+            name: packageExams.name,
+            description: packageExams.description,
+            questionCount: packageExams.questionCount,
+            sortOrder: packageExams.sortOrder,
+            isActive: packageExams.isActive,
+          })
+          .from(packageExams)
+          .where(eq(packageExams.isActive, true))
+          .orderBy(asc(packageExams.packageId), asc(packageExams.sortOrder), asc(packageExams.id))
+      : [];
+
+    const examsByPackage = new Map<number, typeof exams>();
+    for (const exam of exams) {
+      const rows = examsByPackage.get(exam.packageId) ?? [];
+      rows.push(exam);
+      examsByPackage.set(exam.packageId, rows);
+    }
+
     res.status(200).json(
-      rows.map((item) => ({
+      packages.map((item) => ({
         id: item.id,
         name: item.name,
         description: item.description,
         price: item.price,
         features: item.features,
-        question_count: item.questionCount,
+        question_count:
+          (examsByPackage.get(item.id) ?? []).reduce(
+            (total, exam) => total + exam.questionCount,
+            0,
+          ) || item.questionCount,
+        exam_count: (examsByPackage.get(item.id) ?? []).length,
+        exams: (examsByPackage.get(item.id) ?? []).map((exam) => ({
+          id: exam.id,
+          package_id: exam.packageId,
+          name: exam.name,
+          description: exam.description,
+          question_count: exam.questionCount,
+          sort_order: exam.sortOrder,
+          is_active: exam.isActive,
+        })),
         session_limit: item.sessionLimit,
         validity_days: item.validityDays,
       })),

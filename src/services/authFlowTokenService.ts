@@ -17,6 +17,7 @@ interface RegistrationFlowTokenPayload extends JwtPayload {
   method: RegistrationFlowMethod;
   email: string;
   name?: string;
+  googleUserId?: string;
 }
 
 const REGISTRATION_TOKEN_TTL_SECONDS = 30 * 60;
@@ -39,6 +40,7 @@ export const issueRegistrationFlowToken = (payload: {
   method: RegistrationFlowMethod;
   email: string;
   name?: string;
+  googleUserId?: string;
 }) => {
   const expiresAt = new Date(
     Date.now() + REGISTRATION_TOKEN_TTL_SECONDS * 1000,
@@ -50,6 +52,7 @@ export const issueRegistrationFlowToken = (payload: {
       method: payload.method,
       email: payload.email,
       name: payload.name?.trim() || undefined,
+      googleUserId: payload.googleUserId?.trim() || undefined,
     } satisfies RegistrationFlowTokenPayload,
     getRegistrationFlowSecret(),
     { expiresIn: REGISTRATION_TOKEN_TTL_SECONDS },
@@ -94,5 +97,9 @@ export const verifyRegistrationFlowToken = (
     ...decoded,
     email: decoded.email.trim().toLowerCase(),
     name: typeof decoded.name === "string" ? decoded.name.trim() : undefined,
+    googleUserId:
+      typeof decoded.googleUserId === "string"
+        ? decoded.googleUserId.trim()
+        : undefined,
   };
 };

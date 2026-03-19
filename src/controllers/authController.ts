@@ -63,7 +63,6 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
     if (
       !name ||
-      !password ||
       !education ||
       !school_origin ||
       !address ||
@@ -72,7 +71,15 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     ) {
       res.status(400).json({
         message:
-          "Invalid payload. Required fields: registration_token, name, password, education, school_origin, exam_purpose, address, phone.",
+          "Invalid payload. Required fields: registration_token, name, education, school_origin, exam_purpose, address, phone.",
+      });
+      return;
+    }
+
+    const requiresPassword = registrationFlow.method !== "google";
+    if (requiresPassword && !password?.trim()) {
+      res.status(400).json({
+        message: "Password is required for email registration.",
       });
       return;
     }
@@ -102,7 +109,12 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         role: "user",
         name: name.trim(),
         email: normalizedEmail,
-        password,
+        password: requiresPassword ? password?.trim() ?? null : null,
+        authProvider: registrationFlow.method === "google" ? "google" : "email",
+        googleUserId:
+          registrationFlow.method === "google"
+            ? registrationFlow.googleUserId ?? null
+            : null,
         education: education.trim(),
         schoolOrigin: school_origin.trim(),
         examPurpose: normalizedExamPurpose,
@@ -126,6 +138,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        authProvider: users.authProvider,
         accountStatus: users.accountStatus,
         statusNote: users.statusNote,
       });
@@ -153,6 +166,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       metadata: {
         email: createdUser.email,
         registration_method: registrationFlow.method,
+        auth_provider: createdUser.authProvider,
       },
     });
   } catch (error) {
@@ -204,6 +218,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        authProvider: users.authProvider,
         accountStatus: users.accountStatus,
         statusNote: users.statusNote,
       })
@@ -211,7 +226,37 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       .where(eq(users.email, email))
       .limit(1);
 
-    if (!user || !user.password || user.password !== password) {
+    if (!user) {
+      await logActivity({
+        action: "LOGIN",
+        entity: "AUTH",
+        status: "failed",
+        message: "Login failed: invalid credential.",
+        metadata: { email },
+      });
+      res.status(401).json({ message: "Invalid email or password." });
+      return;
+    }
+
+    if (!user.password) {
+      await logActivity({
+        actorUserId: user.id,
+        actorRole: user.role,
+        action: "LOGIN",
+        entity: "AUTH",
+        entityId: user.id,
+        status: "failed",
+        message: "Login blocked: account uses Google sign-in only.",
+        metadata: { email },
+      });
+      res.status(403).json({
+        message:
+          "Akun ini terdaftar melalui Google. Silakan masuk dengan Google.",
+      });
+      return;
+    }
+
+    if (user.password !== password) {
       await logActivity({
         action: "LOGIN",
         entity: "AUTH",

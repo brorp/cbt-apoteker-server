@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import path from "node:path";
 
 import cors from "cors";
 
@@ -17,6 +18,7 @@ const port = Number(process.env.PORT ?? 3001);
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 app.use(activityMiddleware);
 
 app.get("/health", (_req, res) => {

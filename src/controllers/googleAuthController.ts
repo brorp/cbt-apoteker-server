@@ -39,6 +39,7 @@ export const continueWithGoogle = async (
         role: users.role,
         name: users.name,
         email: users.email,
+        password: users.password,
         education: users.education,
         schoolOrigin: users.schoolOrigin,
         examPurpose: users.examPurpose,
@@ -46,6 +47,8 @@ export const continueWithGoogle = async (
         phone: users.phone,
         targetScore: users.targetScore,
         isPremium: users.isPremium,
+        authProvider: users.authProvider,
+        googleUserId: users.googleUserId,
         accountStatus: users.accountStatus,
         statusNote: users.statusNote,
       })
@@ -71,6 +74,20 @@ export const continueWithGoogle = async (
             "Akun Anda saat ini nonaktif. Silakan hubungi admin.",
         });
         return;
+      }
+
+      if (
+        existingUser.googleUserId !== googleProfile.googleUserId ||
+        existingUser.authProvider === "email"
+      ) {
+        await db
+          .update(users)
+          .set({
+            googleUserId: googleProfile.googleUserId,
+            authProvider: existingUser.password ? "both" : "google",
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, existingUser.id));
       }
 
       const token = createAccessToken({
@@ -106,6 +123,7 @@ export const continueWithGoogle = async (
       method: "google",
       email: googleProfile.email,
       name: googleProfile.name,
+      googleUserId: googleProfile.googleUserId,
     });
 
     await logActivity({

@@ -1,12 +1,13 @@
 import { randomInt } from "node:crypto";
 import type { Response } from "express";
-import { and, count, desc, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import { syncDefaultExamPackages } from "../db/defaultPackages.js";
 import {
   examAnswers,
   examPackages,
+  packageExams,
   examSessions,
   questions,
   users,
@@ -22,6 +23,8 @@ const EXAM_GRACE_PERIOD_MINUTES = 1;
 const OPTION_KEYS: OptionKey[] = ["a", "b", "c", "d", "e"];
 
 type StartExamBody = {
+  exam_id?: unknown;
+  examId?: unknown;
   package_id?: unknown;
   packageId?: unknown;
 };
@@ -29,6 +32,7 @@ type StartExamBody = {
 type QuestionRow = {
   id: number;
   questionText: string;
+  imageUrl: string | null;
   optionA: string;
   optionB: string;
   optionC: string;
@@ -78,6 +82,7 @@ const buildQuestionPayload = (
     questionId: question.id,
     order,
     questionText: question.questionText,
+    imageUrl: question.imageUrl,
     displayedOptions,
     optionMapOriginalToDisplayed,
     optionMapDisplayedToOriginal,
@@ -93,6 +98,7 @@ const toPublicQuestions = (payloadMap: ExamPayloadMap) =>
       questionId: item.questionId,
       order: item.order,
       questionText: item.questionText,
+      imageUrl: item.imageUrl ?? null,
       options: item.displayedOptions,
     }));
 
@@ -169,24 +175,88 @@ const getAccessDeniedMessage = (
   return "Exam package not found.";
 };
 
-const getPackageSummary = async (packageId: number | null) => {
-  if (!packageId) {
+const getExamCatalogSummary = async (
+  packageId: number | null,
+  examId: number | null,
+) => {
+  if (!packageId && !examId) {
     return null;
   }
 
-  const [questionPackage] = await db
+  const [summary] = await db
     .select({
       id: examPackages.id,
       name: examPackages.name,
       price: examPackages.price,
       questionCount: examPackages.questionCount,
       isActive: examPackages.isActive,
+      examId: packageExams.id,
+      examName: packageExams.name,
+      examQuestionCount: packageExams.questionCount,
+      examIsActive: packageExams.isActive,
     })
     .from(examPackages)
-    .where(eq(examPackages.id, packageId))
+    .leftJoin(packageExams, eq(packageExams.packageId, examPackages.id))
+    .where(
+      examId
+        ? eq(packageExams.id, examId)
+        : packageId
+          ? eq(examPackages.id, packageId)
+          : undefined,
+    )
     .limit(1);
 
-  return questionPackage ?? null;
+  return summary ?? null;
+};
+
+const resolveRequestedExam = async (input: {
+  examId: number | null;
+  packageId: number | null;
+}) => {
+  if (input.examId) {
+    const [selectedExam] = await db
+      .select({
+        examId: packageExams.id,
+        examName: packageExams.name,
+        examDescription: packageExams.description,
+        examQuestionCount: packageExams.questionCount,
+        examIsActive: packageExams.isActive,
+        packageId: examPackages.id,
+        packageName: examPackages.name,
+        packagePrice: examPackages.price,
+        packageIsActive: examPackages.isActive,
+      })
+      .from(packageExams)
+      .innerJoin(examPackages, eq(packageExams.packageId, examPackages.id))
+      .where(eq(packageExams.id, input.examId))
+      .limit(1);
+
+    return selectedExam ?? null;
+  }
+
+  if (!input.packageId) {
+    return null;
+  }
+
+  const [selectedExam] = await db
+    .select({
+      examId: packageExams.id,
+      examName: packageExams.name,
+      examDescription: packageExams.description,
+      examQuestionCount: packageExams.questionCount,
+      examIsActive: packageExams.isActive,
+      packageId: examPackages.id,
+      packageName: examPackages.name,
+      packagePrice: examPackages.price,
+      packageIsActive: examPackages.isActive,
+    })
+    .from(packageExams)
+    .innerJoin(examPackages, eq(packageExams.packageId, examPackages.id))
+    .where(eq(packageExams.packageId, input.packageId))
+    .orderBy(asc(packageExams.sortOrder), asc(packageExams.id))
+    .limit(1);
+
+  return selectedExam ?? null;
 };
 
 export const getSubmitDeadline = (
@@ -224,18 +294,34 @@ export const startExam = async (
 
     const userId = req.user.userId;
     const body = req.body as StartExamBody;
+    const examId = normalizePositiveInteger(body.exam_id ?? body.examId);
     const packageId = normalizePositiveInteger(body.package_id ?? body.packageId);
 
-    if (!packageId) {
+    if (!examId && !packageId) {
       await logActivity({
         actorUserId: userId,
         actorRole: req.user.role,
         action: "EXAM_START",
         entity: "EXAM_SESSION",
         status: "failed",
-        message: "Exam start failed: invalid package id.",
+        message: "Exam start failed: invalid exam or package id.",
       });
-      res.status(400).json({ message: "Invalid package_id." });
+      res.status(400).json({ message: "Invalid exam_id or package_id." });
+      return;
+    }
+
+    const selectedExam = await resolveRequestedExam({ examId, packageId });
+    if (!selectedExam || !selectedExam.packageIsActive || !selectedExam.examIsActive) {
+      await logActivity({
+        actorUserId: userId,
+        actorRole: req.user.role,
+        action: "EXAM_START",
+        entity: "EXAM_SESSION",
+        status: "failed",
+        message: "Exam start failed: exam not found.",
+        metadata: { examId, packageId },
+      });
+      res.status(404).json({ message: "Exam not found." });
       return;
     }
 
@@ -250,7 +336,7 @@ export const startExam = async (
         .then((rows) => rows[0] ?? null),
       getPackageAccessState({
         userId,
-        packageId,
+        packageId: selectedExam.packageId,
       }),
     ]);
 
@@ -275,7 +361,7 @@ export const startExam = async (
         entity: "EXAM_SESSION",
         status: "failed",
         message: "Exam start failed: package not found.",
-        metadata: { packageId },
+        metadata: { packageId: selectedExam.packageId, examId: selectedExam.examId },
       });
       res.status(404).json({ message: "Exam package not found." });
       return;
@@ -292,7 +378,8 @@ export const startExam = async (
         status: "failed",
         message: "Exam start blocked: package access denied.",
         metadata: {
-          packageId,
+          packageId: selectedExam.packageId,
+          examId: selectedExam.examId,
           packageName: selectedPackage.name,
           accessReason: accessState.reason,
         },
@@ -307,6 +394,7 @@ export const startExam = async (
       .select({
         id: examSessions.id,
         packageId: examSessions.packageId,
+        examId: examSessions.examId,
         startTime: examSessions.startTime,
         durationMinutes: examSessions.durationMinutes,
         status: examSessions.status,
@@ -349,6 +437,7 @@ export const startExam = async (
             message: "Another package exam session is still ongoing.",
             sessionId: ongoingSession.id,
             package_id: ongoingSession.packageId,
+            exam_id: ongoingSession.examId,
           });
           return;
         }
@@ -358,7 +447,9 @@ export const startExam = async (
           sessionId: ongoingSession.id,
           package_id: selectedPackage.id,
           package_name: selectedPackage.name,
-          question_count: selectedPackage.questionCount,
+          exam_id: ongoingSession.examId ?? selectedExam.examId,
+          exam_name: selectedExam.examName,
+          question_count: selectedExam.examQuestionCount,
           startTime: ongoingSession.startTime,
           durationMinutes,
           gracePeriodMinutes: payloadMap.gracePeriodMinutes,
@@ -376,17 +467,20 @@ export const startExam = async (
           metadata: {
             packageId: selectedPackage.id,
             packageName: selectedPackage.name,
+            examId: ongoingSession.examId ?? selectedExam.examId,
+            examName: selectedExam.examName,
           },
         });
         return;
       }
     }
 
-    const questionLimit = selectedPackage.questionCount;
+    const questionLimit = selectedExam.examQuestionCount;
     const activeQuestions = await db
       .select({
         id: questions.id,
         questionText: questions.questionText,
+        imageUrl: questions.imageUrl,
         optionA: questions.optionA,
         optionB: questions.optionB,
         optionC: questions.optionC,
@@ -396,7 +490,7 @@ export const startExam = async (
         explanation: questions.explanation,
       })
       .from(questions)
-      .where(and(eq(questions.isActive, true), eq(questions.packageId, selectedPackage.id)))
+      .where(and(eq(questions.isActive, true), eq(questions.examId, selectedExam.examId)))
       .limit(questionLimit);
 
     if (activeQuestions.length < questionLimit) {
@@ -410,12 +504,14 @@ export const startExam = async (
         metadata: {
           packageId: selectedPackage.id,
           packageName: selectedPackage.name,
+          examId: selectedExam.examId,
+          examName: selectedExam.examName,
           requiredQuestions: questionLimit,
           availableQuestions: activeQuestions.length,
         },
       });
       res.status(422).json({
-        message: `Insufficient active questions for package ${selectedPackage.name}. Required: ${questionLimit}, available: ${activeQuestions.length}.`,
+        message: `Insufficient active questions for exam ${selectedExam.examName}. Required: ${questionLimit}, available: ${activeQuestions.length}.`,
       });
       return;
     }
@@ -426,7 +522,7 @@ export const startExam = async (
       .select({ total: count() })
       .from(examSessions)
       .where(
-        and(eq(examSessions.userId, userId), eq(examSessions.packageId, selectedPackage.id)),
+        and(eq(examSessions.userId, userId), eq(examSessions.examId, selectedExam.examId)),
       );
     const attemptNumber = Number(attemptAggregate?.total ?? 0) + 1;
     const payloadMap: ExamPayloadMap = {
@@ -443,6 +539,7 @@ export const startExam = async (
       .values({
         userId,
         packageId: selectedPackage.id,
+        examId: selectedExam.examId,
         attemptNumber,
         startTime: new Date(),
         durationMinutes,
@@ -452,6 +549,7 @@ export const startExam = async (
       .returning({
         id: examSessions.id,
         packageId: examSessions.packageId,
+        examId: examSessions.examId,
         attemptNumber: examSessions.attemptNumber,
         startTime: examSessions.startTime,
         durationMinutes: examSessions.durationMinutes,
@@ -462,6 +560,8 @@ export const startExam = async (
       sessionId: createdSession.id,
       package_id: createdSession.packageId,
       package_name: selectedPackage.name,
+      exam_id: createdSession.examId,
+      exam_name: selectedExam.examName,
       attempt_number: createdSession.attemptNumber,
       question_count: questionLimit,
       startTime: createdSession.startTime,
@@ -481,6 +581,8 @@ export const startExam = async (
       metadata: {
         packageId: selectedPackage.id,
         packageName: selectedPackage.name,
+        examId: selectedExam.examId,
+        examName: selectedExam.examName,
         questionCount: questionLimit,
       },
     });
@@ -570,6 +672,7 @@ const computeSessionResult = (
         questionId: question.questionId,
         order: question.order,
         questionText: question.questionText,
+        imageUrl: question.imageUrl ?? null,
         options: question.displayedOptions,
         selectedOption,
         correctAnswer: displayedCorrectAnswer,
@@ -631,6 +734,7 @@ const getOngoingSession = async (userId: number) => {
       id: examSessions.id,
       userId: examSessions.userId,
       packageId: examSessions.packageId,
+      examId: examSessions.examId,
       attemptNumber: examSessions.attemptNumber,
       startTime: examSessions.startTime,
       durationMinutes: examSessions.durationMinutes,
@@ -689,14 +793,20 @@ export const getCurrentExam = async (
       .from(examAnswers)
       .where(eq(examAnswers.sessionId, ongoingSession.id));
 
-    const questionPackage = await getPackageSummary(ongoingSession.packageId);
+    const catalog = await getExamCatalogSummary(
+      ongoingSession.packageId,
+      ongoingSession.examId ?? null,
+    );
 
     res.status(200).json({
       sessionId: ongoingSession.id,
       package_id: ongoingSession.packageId,
-      package_name: questionPackage?.name ?? null,
+      package_name: catalog?.name ?? null,
+      exam_id: ongoingSession.examId ?? catalog?.examId ?? null,
+      exam_name: catalog?.examName ?? null,
       attempt_number: ongoingSession.attemptNumber,
-      question_count: questionPackage?.questionCount ?? getSessionQuestions(payloadMap).length,
+      question_count:
+        catalog?.examQuestionCount ?? getSessionQuestions(payloadMap).length,
       startTime: ongoingSession.startTime,
       durationMinutes,
       gracePeriodMinutes: payloadMap.gracePeriodMinutes,
@@ -855,12 +965,17 @@ export const submitExam = async (
       durationMinutes,
       payloadMap,
     });
-    const questionPackage = await getPackageSummary(ongoingSession.packageId);
+    const catalog = await getExamCatalogSummary(
+      ongoingSession.packageId,
+      ongoingSession.examId ?? null,
+    );
 
     res.status(200).json({
       sessionId: summary.sessionId,
       package_id: ongoingSession.packageId,
-      package_name: questionPackage?.name ?? null,
+      package_name: catalog?.name ?? null,
+      exam_id: ongoingSession.examId ?? catalog?.examId ?? null,
+      exam_name: catalog?.examName ?? null,
       attempt_number: ongoingSession.attemptNumber,
       status: summary.status,
       score: summary.score,
@@ -879,7 +994,9 @@ export const submitExam = async (
       message: "Exam submitted.",
       metadata: {
         packageId: ongoingSession.packageId,
-        packageName: questionPackage?.name ?? null,
+        packageName: catalog?.name ?? null,
+        examId: ongoingSession.examId ?? catalog?.examId ?? null,
+        examName: catalog?.examName ?? null,
         score: summary.score,
         correctAnswers: summary.correctAnswers,
         totalQuestions: summary.totalQuestions,
@@ -925,6 +1042,8 @@ export const getExamResult = async (
         id: examSessions.id,
         packageId: examSessions.packageId,
         packageName: examPackages.name,
+        examId: examSessions.examId,
+        examName: packageExams.name,
         attemptNumber: examSessions.attemptNumber,
         startTime: examSessions.startTime,
         durationMinutes: examSessions.durationMinutes,
@@ -935,6 +1054,7 @@ export const getExamResult = async (
       })
       .from(examSessions)
       .leftJoin(examPackages, eq(examSessions.packageId, examPackages.id))
+      .leftJoin(packageExams, eq(examSessions.examId, packageExams.id))
       .where(filter)
       .limit(1);
 
@@ -971,6 +1091,8 @@ export const getExamResult = async (
       sessionId: session.id,
       package_id: session.packageId,
       package_name: session.packageName ?? null,
+      exam_id: session.examId ?? null,
+      exam_name: session.examName ?? null,
       attempt_number: session.attemptNumber ?? null,
       status: session.status,
       score: session.score ?? computed.score,
@@ -1002,6 +1124,8 @@ export const listMyExamSessions = async (
         id: examSessions.id,
         packageId: examSessions.packageId,
         packageName: examPackages.name,
+        examId: examSessions.examId,
+        examName: packageExams.name,
         attemptNumber: examSessions.attemptNumber,
         status: examSessions.status,
         score: examSessions.score,
@@ -1012,6 +1136,7 @@ export const listMyExamSessions = async (
       })
       .from(examSessions)
       .leftJoin(examPackages, eq(examSessions.packageId, examPackages.id))
+      .leftJoin(packageExams, eq(examSessions.examId, packageExams.id))
       .where(eq(examSessions.userId, req.user.userId))
       .orderBy(desc(examSessions.startTime), desc(examSessions.id));
 
@@ -1026,6 +1151,8 @@ export const listMyExamSessions = async (
           session_id: row.id,
           package_id: row.packageId,
           package_name: row.packageName ?? null,
+          exam_id: row.examId ?? null,
+          exam_name: row.examName ?? null,
           attempt_number: row.attemptNumber,
           status: row.status,
           score: row.score ?? 0,
