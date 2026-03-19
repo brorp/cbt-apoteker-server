@@ -97,3 +97,72 @@ export const profile = async (
     res.status(500).json({ message: "Internal server error." });
   }
 };
+
+export const updateProfile = async (
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> => {
+  try {
+    if (!req.user) {
+      await logActivity({
+        action: "PROFILE_UPDATE",
+        entity: "USER",
+        status: "failed",
+        message: "Profile update failed: unauthorized request.",
+      });
+      res.status(401).json({ message: "Unauthorized." });
+      return;
+    }
+
+    const {
+      name,
+      education,
+      school_origin,
+      exam_purpose,
+      address,
+      phone,
+      target_score,
+    } = req.body;
+
+    if (!name || name.trim().length < 3) {
+      res.status(400).json({ message: "Nama minimal 3 karakter." });
+      return;
+    }
+
+    await db
+      .update(users)
+      .set({
+        name,
+        education,
+        schoolOrigin: school_origin,
+        examPurpose: exam_purpose,
+        address,
+        phone,
+        targetScore: target_score,
+      })
+      .where(eq(users.id, req.user.userId));
+
+    res.status(200).json({ message: "Profile updated successfully." });
+
+    await logActivity({
+      actorUserId: req.user.userId,
+      actorRole: req.user.role,
+      action: "PROFILE_UPDATE",
+      entity: "USER",
+      entityId: req.user.userId,
+      status: "success",
+      message: "Profile updated.",
+    });
+  } catch (error) {
+    console.error("updateProfile error:", error);
+    await logActivity({
+      actorUserId: req.user?.userId ?? null,
+      actorRole: req.user?.role ?? null,
+      action: "PROFILE_UPDATE",
+      entity: "USER",
+      status: "failed",
+      message: "Profile update failed due to internal server error.",
+    });
+    res.status(500).json({ message: "Internal server error." });
+  }
+};
