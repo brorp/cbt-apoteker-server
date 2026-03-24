@@ -19,14 +19,17 @@ import {
   recheckAdminTransaction,
 } from "../controllers/adminPaymentController.js";
 import {
-  archiveAdminPackage,
-  archiveAdminPackageExam,
   createAdminPackage,
-  createAdminPackageExam,
+  deleteAdminPackage,
   listAdminPackages,
   updateAdminPackage,
-  updateAdminPackageExam,
 } from "../controllers/adminPackageController.js";
+import {
+  createAdminExam,
+  deleteAdminExam,
+  listAdminExams,
+  updateAdminExam,
+} from "../controllers/adminExamController.js";
 import {
   getQuestionReportDetail,
   listQuestionReports,
@@ -51,10 +54,12 @@ adminRoutes.get("/activity-logs", listActivityLogs);
 adminRoutes.get("/packages", listAdminPackages);
 adminRoutes.post("/packages", createAdminPackage);
 adminRoutes.put("/packages/:id", updateAdminPackage);
-adminRoutes.patch("/packages/:id/archive", archiveAdminPackage);
-adminRoutes.post("/packages/:packageId/exams", createAdminPackageExam);
-adminRoutes.put("/exams/:id", updateAdminPackageExam);
-adminRoutes.patch("/exams/:id/archive", archiveAdminPackageExam);
+adminRoutes.delete("/packages/:id", deleteAdminPackage);
+
+adminRoutes.get("/exams", listAdminExams);
+adminRoutes.post("/exams", createAdminExam);
+adminRoutes.put("/exams/:id", updateAdminExam);
+adminRoutes.delete("/exams/:id", deleteAdminExam);
 
 adminRoutes.get("/questions", listQuestions);
 adminRoutes.post("/questions", createQuestion);

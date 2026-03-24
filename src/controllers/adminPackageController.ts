@@ -1,10 +1,16 @@
 import type { Response } from "express";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { db } from "../config/db.js";
 import { syncDefaultExamPackages } from "../db/defaultPackages.js";
-import { examPackages, packageExams } from "../db/schema.js";
+import { examPackages, packageExams, questions } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
+import {
+  getPackageCatalogById,
+  listPackagesWithExams,
+  replacePackageExamAssignments,
+  syncPackageQuestionCount,
+} from "../services/examCatalogService.js";
 
 type PackagePayload = {
   name?: unknown;
@@ -13,76 +19,8 @@ type PackagePayload = {
   price?: unknown;
   is_active?: unknown;
   isActive?: unknown;
-  exams?: unknown;
-};
-
-type PackageExamPayload = {
-  id?: unknown;
-  name?: unknown;
-  description?: unknown;
-  question_count?: unknown;
-  questionCount?: unknown;
-  session_limit?: unknown;
-  sessionLimit?: unknown;
-  sort_order?: unknown;
-  sortOrder?: unknown;
-  is_active?: unknown;
-  isActive?: unknown;
-};
-
-type NormalizedPackageExamInput = {
-  id?: number;
-  name: string;
-  description: string;
-  questionCount: number;
-  sessionLimit: number | null;
-  sortOrder: number;
-  isActive: boolean;
-};
-
-type PackageRow = {
-  id: number;
-  name: string;
-  description: string;
-  features: string;
-  price: number;
-  questionCount: number;
-  sessionLimit: number | null;
-  validityDays: number | null;
-  isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-type PackageExamRow = {
-  id: number;
-  packageId: number;
-  name: string;
-  description: string;
-  questionCount: number;
-  sessionLimit: number | null;
-  sortOrder: number;
-  isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
-const normalizePositiveInteger = (value: unknown): number | null => {
-  if (typeof value === "number") {
-    return Number.isInteger(value) && value > 0 ? value : null;
-  }
-
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const normalized = value.trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-
-  const parsed = Number(normalized);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  exam_ids?: unknown;
+  examIds?: unknown;
 };
 
 const normalizeNonNegativeInteger = (value: unknown): number | null => {
@@ -95,20 +33,12 @@ const normalizeNonNegativeInteger = (value: unknown): number | null => {
   }
 
   const normalized = value.trim();
-  if (normalized.length === 0) {
+  if (!normalized) {
     return null;
   }
 
   const parsed = Number(normalized);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
-};
-
-const normalizeNullablePositiveInteger = (value: unknown): number | null => {
-  if (value === null || value === undefined || value === "") {
-    return null;
-  }
-
-  return normalizePositiveInteger(value);
 };
 
 const normalizeBoolean = (value: unknown): boolean | null => {
@@ -131,7 +61,7 @@ const normalizeBoolean = (value: unknown): boolean | null => {
   return null;
 };
 
-const normalizeIdentifier = (value: unknown): number | null => {
+const normalizePositiveInteger = (value: unknown): number | null => {
   if (typeof value === "number") {
     return Number.isInteger(value) && value > 0 ? value : null;
   }
@@ -141,7 +71,7 @@ const normalizeIdentifier = (value: unknown): number | null => {
   }
 
   const normalized = value.trim();
-  if (normalized.length === 0) {
+  if (!normalized) {
     return null;
   }
 
@@ -149,299 +79,62 @@ const normalizeIdentifier = (value: unknown): number | null => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
-const normalizeExamList = (
+const normalizeExamIds = (
   value: unknown,
-  requireAtLeastOne: boolean,
-): {
-  exams: NormalizedPackageExamInput[];
-  error?: string;
-} => {
+): { examIds: number[]; error?: string } => {
+  if (value === undefined) {
+    return { examIds: [] };
+  }
+
   if (!Array.isArray(value)) {
-    return {
-      exams: [],
-      error: "Invalid exams payload. Expected an array of exams.",
-    };
+    return { examIds: [], error: "exam_ids must be an array." };
   }
 
-  if (requireAtLeastOne && value.length === 0) {
-    return {
-      exams: [],
-      error: "A package must contain at least one exam.",
-    };
+  const examIds: number[] = [];
+  const seen = new Set<number>();
+
+  for (const item of value) {
+    const examId = normalizePositiveInteger(item);
+    if (!examId) {
+      return { examIds: [], error: "Each exam_id must be a positive integer." };
+    }
+    if (seen.has(examId)) {
+      continue;
+    }
+    seen.add(examId);
+    examIds.push(examId);
   }
 
-  const exams: NormalizedPackageExamInput[] = [];
-  const seenIds = new Set<number>();
-
-  for (const [index, item] of value.entries()) {
-    if (!item || typeof item !== "object") {
-      return {
-        exams: [],
-        error: `Invalid exam payload at position ${index + 1}.`,
-      };
-    }
-
-    const payload = item as PackageExamPayload;
-    const id = normalizeIdentifier(payload.id);
-    if (id !== null) {
-      if (seenIds.has(id)) {
-        return {
-          exams: [],
-          error: `Duplicate exam id ${id} found in payload.`,
-        };
-      }
-      seenIds.add(id);
-    }
-
-    const name = typeof payload.name === "string" ? payload.name.trim() : "";
-    const description =
-      typeof payload.description === "string" ? payload.description.trim() : "";
-    const questionCount = normalizePositiveInteger(
-      payload.question_count ?? payload.questionCount,
-    );
-    const rawSessionLimit = payload.session_limit ?? payload.sessionLimit;
-    const sessionLimit = normalizeNullablePositiveInteger(rawSessionLimit);
-    const sortOrder =
-      normalizePositiveInteger(payload.sort_order ?? payload.sortOrder) ??
-      index + 1;
-    const isActive =
-      normalizeBoolean(payload.is_active ?? payload.isActive) ?? true;
-
-    if (!name) {
-      return {
-        exams: [],
-        error: `Exam name is required at position ${index + 1}.`,
-      };
-    }
-
-    if (!questionCount) {
-      return {
-        exams: [],
-        error: `Invalid question_count for exam "${name}".`,
-      };
-    }
-
-    if (
-      sessionLimit === null &&
-      rawSessionLimit !== null &&
-      rawSessionLimit !== undefined &&
-      rawSessionLimit !== ""
-    ) {
-      return {
-        exams: [],
-        error: `Invalid session_limit for exam "${name}".`,
-      };
-    }
-
-    exams.push({
-      ...(id ? { id } : {}),
-      name,
-      description,
-      questionCount,
-      sessionLimit,
-      sortOrder,
-      isActive,
-    });
-  }
-
-  return { exams };
+  return { examIds };
 };
 
-const toExamResponse = (row: PackageExamRow) => ({
-  id: row.id,
-  package_id: row.packageId,
-  name: row.name,
-  description: row.description,
-  question_count: row.questionCount,
-  session_limit: row.sessionLimit,
-  sort_order: row.sortOrder,
-  is_active: row.isActive,
-  created_at: row.createdAt,
-  updated_at: row.updatedAt,
-});
-
-const toPackageResponse = (row: PackageRow, exams: PackageExamRow[] = []) => ({
-  id: row.id,
-  name: row.name,
-  description: row.description,
-  features: row.features,
-  price: row.price,
-  question_count:
-    exams.reduce((total, exam) => total + exam.questionCount, 0) ||
-    row.questionCount,
-  is_active: row.isActive,
-  exam_count: exams.length,
-  exams: exams.map(toExamResponse),
-  created_at: row.createdAt,
-  updated_at: row.updatedAt,
-});
-
-const getPackageRows = async (): Promise<PackageRow[]> =>
-  db
-    .select({
-      id: examPackages.id,
-      name: examPackages.name,
-      description: examPackages.description,
-      features: examPackages.features,
-      price: examPackages.price,
-      questionCount: examPackages.questionCount,
-      sessionLimit: examPackages.sessionLimit,
-      validityDays: examPackages.validityDays,
-      isActive: examPackages.isActive,
-      createdAt: examPackages.createdAt,
-      updatedAt: examPackages.updatedAt,
-    })
-    .from(examPackages)
-    .orderBy(desc(examPackages.createdAt), asc(examPackages.id));
-
-const getExamRows = async (packageIds: number[]): Promise<PackageExamRow[]> => {
-  if (packageIds.length === 0) {
-    return [];
-  }
-
-  return db
-    .select({
-      id: packageExams.id,
-      packageId: packageExams.packageId,
-      name: packageExams.name,
-      description: packageExams.description,
-      questionCount: packageExams.questionCount,
-      sessionLimit: packageExams.sessionLimit,
-      sortOrder: packageExams.sortOrder,
-      isActive: packageExams.isActive,
-      createdAt: packageExams.createdAt,
-      updatedAt: packageExams.updatedAt,
-    })
-    .from(packageExams)
-    .where(inArray(packageExams.packageId, packageIds))
-    .orderBy(
-      asc(packageExams.packageId),
-      asc(packageExams.sortOrder),
-      asc(packageExams.id),
-    );
-};
-
-const getPackageWithExamsById = async (packageId: number) => {
-  const [pkg] = await db
-    .select({
-      id: examPackages.id,
-      name: examPackages.name,
-      description: examPackages.description,
-      features: examPackages.features,
-      price: examPackages.price,
-      questionCount: examPackages.questionCount,
-      sessionLimit: examPackages.sessionLimit,
-      validityDays: examPackages.validityDays,
-      isActive: examPackages.isActive,
-      createdAt: examPackages.createdAt,
-      updatedAt: examPackages.updatedAt,
-    })
-    .from(examPackages)
-    .where(eq(examPackages.id, packageId))
-    .limit(1);
-
-  if (!pkg) {
+const toPackageResponse = (item: Awaited<ReturnType<typeof getPackageCatalogById>>) => {
+  if (!item) {
     return null;
   }
 
-  const exams = await getExamRows([packageId]);
-  return toPackageResponse(pkg, exams);
-};
-
-const syncPackageQuestionCount = async (packageId: number): Promise<void> => {
-  const activeExams = await db
-    .select({
-      questionCount: packageExams.questionCount,
-    })
-    .from(packageExams)
-    .where(
-      and(eq(packageExams.packageId, packageId), eq(packageExams.isActive, true)),
-    );
-
-  const totalQuestionCount = activeExams.reduce(
-    (total, exam) => total + exam.questionCount,
-    0,
-  );
-
-  await db
-    .update(examPackages)
-    .set({
-      questionCount: totalQuestionCount,
-      updatedAt: new Date(),
-    })
-    .where(eq(examPackages.id, packageId));
-};
-
-const applyNestedPackageExams = async (
-  packageId: number,
-  exams: NormalizedPackageExamInput[],
-): Promise<void> => {
-  const existingExams = await db
-    .select({
-      id: packageExams.id,
-      packageId: packageExams.packageId,
-    })
-    .from(packageExams)
-    .where(eq(packageExams.packageId, packageId));
-
-  const existingIds = new Set(existingExams.map((item) => item.id));
-  const retainedIds = new Set<number>();
-
-  for (const exam of exams) {
-    if (exam.id) {
-      if (!existingIds.has(exam.id)) {
-        throw new Error(`Exam id ${exam.id} does not belong to package ${packageId}.`);
-      }
-
-      retainedIds.add(exam.id);
-      await db
-        .update(packageExams)
-        .set({
-          name: exam.name,
-          description: exam.description,
-          questionCount: exam.questionCount,
-          sessionLimit: exam.sessionLimit,
-          sortOrder: exam.sortOrder,
-          isActive: exam.isActive,
-          updatedAt: new Date(),
-        })
-        .where(eq(packageExams.id, exam.id));
-      continue;
-    }
-
-    const [created] = await db
-      .insert(packageExams)
-      .values({
-        packageId,
-        name: exam.name,
-        description: exam.description,
-        questionCount: exam.questionCount,
-        sessionLimit: exam.sessionLimit,
-        sortOrder: exam.sortOrder,
-        isActive: exam.isActive,
-      })
-      .returning({
-        id: packageExams.id,
-      });
-
-    retainedIds.add(created.id);
-  }
-
-  const examIdsToArchive = existingExams
-    .map((item) => item.id)
-    .filter((examId) => !retainedIds.has(examId));
-
-  if (examIdsToArchive.length > 0) {
-    await db
-      .update(packageExams)
-      .set({
-        isActive: false,
-        updatedAt: new Date(),
-      })
-      .where(inArray(packageExams.id, examIdsToArchive));
-  }
-
-  await syncPackageQuestionCount(packageId);
+  return {
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    features: item.features,
+    price: item.price,
+    question_count: item.questionCount,
+    is_active: item.isActive,
+    exam_count: item.examCount,
+    exams: item.exams.map((exam) => ({
+      id: exam.id,
+      package_id: item.id,
+      name: exam.name,
+      description: exam.description,
+      question_count: exam.questionCount,
+      session_limit: exam.sessionLimit,
+      sort_order: exam.sortOrder,
+      is_active: exam.isActive,
+    })),
+    created_at: item.createdAt,
+    updated_at: item.updatedAt,
+  };
 };
 
 export const listAdminPackages = async (
@@ -451,18 +144,30 @@ export const listAdminPackages = async (
   try {
     await syncDefaultExamPackages();
 
-    const packages = await getPackageRows();
-    const exams = await getExamRows(packages.map((item) => item.id));
-    const examMap = new Map<number, PackageExamRow[]>();
-
-    for (const exam of exams) {
-      const rows = examMap.get(exam.packageId) ?? [];
-      rows.push(exam);
-      examMap.set(exam.packageId, rows);
-    }
-
+    const rows = await listPackagesWithExams();
     res.status(200).json(
-      packages.map((item) => toPackageResponse(item, examMap.get(item.id) ?? [])),
+      rows.map((item) => ({
+        id: item.id,
+        name: item.name,
+        description: item.description,
+        features: item.features,
+        price: item.price,
+        question_count: item.questionCount,
+        is_active: item.isActive,
+        exam_count: item.examCount,
+        exams: item.exams.map((exam) => ({
+          id: exam.id,
+          package_id: item.id,
+          name: exam.name,
+          description: exam.description,
+          question_count: exam.questionCount,
+          session_limit: exam.sessionLimit,
+          sort_order: exam.sortOrder,
+          is_active: exam.isActive,
+        })),
+        created_at: item.createdAt,
+        updated_at: item.updatedAt,
+      })),
     );
   } catch (error) {
     console.error("listAdminPackages error:", error);
@@ -483,7 +188,7 @@ export const createAdminPackage = async (
       typeof body.features === "string" ? body.features.trim() : "";
     const price = normalizeNonNegativeInteger(body.price);
     const isActive = normalizeBoolean(body.is_active ?? body.isActive) ?? true;
-    const normalizedExams = normalizeExamList(body.exams, true);
+    const normalizedExamIds = normalizeExamIds(body.exam_ids ?? body.examIds);
 
     if (!name || !description || !features || price === null) {
       res.status(400).json({
@@ -493,14 +198,10 @@ export const createAdminPackage = async (
       return;
     }
 
-    if (normalizedExams.error) {
-      res.status(400).json({ message: normalizedExams.error });
+    if (normalizedExamIds.error) {
+      res.status(400).json({ message: normalizedExamIds.error });
       return;
     }
-
-    const totalQuestionCount = normalizedExams.exams
-      .filter((exam) => exam.isActive)
-      .reduce((total, exam) => total + exam.questionCount, 0);
 
     const [created] = await db
       .insert(examPackages)
@@ -509,25 +210,22 @@ export const createAdminPackage = async (
         description,
         features,
         price,
-        questionCount: totalQuestionCount,
+        questionCount: 0,
         isActive,
       })
-      .returning({
-        id: examPackages.id,
-      });
+      .returning({ id: examPackages.id });
 
-    await applyNestedPackageExams(created.id, normalizedExams.exams);
+    await replacePackageExamAssignments(created.id, normalizedExamIds.examIds);
 
-    const withExams = await getPackageWithExamsById(created.id);
-    if (!withExams) {
-      res.status(500).json({ message: "Failed to load created package." });
-      return;
-    }
-
-    res.status(201).json(withExams);
+    const pkg = await getPackageCatalogById(created.id);
+    res.status(201).json(toPackageResponse(pkg));
   } catch (error) {
     console.error("createAdminPackage error:", error);
-    res.status(500).json({ message: "Internal server error." });
+    const message =
+      error instanceof Error ? error.message : "Internal server error.";
+    res.status(message === "Internal server error." ? 500 : 400).json({
+      message,
+    });
   }
 };
 
@@ -536,8 +234,8 @@ export const updateAdminPackage = async (
   res: Response,
 ): Promise<void> => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
+    const packageId = Number(req.params.id);
+    if (!Number.isInteger(packageId) || packageId <= 0) {
       res.status(400).json({ message: "Invalid package id." });
       return;
     }
@@ -545,7 +243,7 @@ export const updateAdminPackage = async (
     const [existingPackage] = await db
       .select({ id: examPackages.id })
       .from(examPackages)
-      .where(eq(examPackages.id, id))
+      .where(eq(examPackages.id, packageId))
       .limit(1);
 
     if (!existingPackage) {
@@ -583,361 +281,100 @@ export const updateAdminPackage = async (
     if (body.is_active !== undefined || body.isActive !== undefined) {
       const isActive = normalizeBoolean(body.is_active ?? body.isActive);
       if (isActive === null) {
-        res.status(400).json({ message: "Invalid is_active." });
+        res.status(400).json({ message: "Invalid is_active value." });
         return;
       }
       updates.isActive = isActive;
     }
 
-    const examsProvided = body.exams !== undefined;
-    const normalizedExams = examsProvided
-      ? normalizeExamList(body.exams, true)
+    const examIdsProvided = body.exam_ids !== undefined || body.examIds !== undefined;
+    const normalizedExamIds = examIdsProvided
+      ? normalizeExamIds(body.exam_ids ?? body.examIds)
       : null;
 
-    if (normalizedExams?.error) {
-      res.status(400).json({ message: normalizedExams.error });
+    if (normalizedExamIds?.error) {
+      res.status(400).json({ message: normalizedExamIds.error });
       return;
     }
 
-    if (Object.keys(updates).length === 0 && !examsProvided) {
+    if (Object.keys(updates).length === 0 && !examIdsProvided) {
       res.status(400).json({ message: "No valid fields to update." });
       return;
     }
 
     if (Object.keys(updates).length > 0) {
       updates.updatedAt = new Date();
-      await db.update(examPackages).set(updates).where(eq(examPackages.id, id));
+      await db
+        .update(examPackages)
+        .set(updates)
+        .where(eq(examPackages.id, packageId));
     }
 
-    if (normalizedExams) {
-      await applyNestedPackageExams(id, normalizedExams.exams);
+    if (normalizedExamIds) {
+      await replacePackageExamAssignments(packageId, normalizedExamIds.examIds);
+    } else {
+      await syncPackageQuestionCount(packageId);
     }
 
-    const withExams = await getPackageWithExamsById(id);
-    if (!withExams) {
-      res.status(500).json({ message: "Failed to load updated package." });
-      return;
-    }
-
-    res.status(200).json(withExams);
+    const pkg = await getPackageCatalogById(packageId);
+    res.status(200).json(toPackageResponse(pkg));
   } catch (error) {
     console.error("updateAdminPackage error:", error);
     const message =
-      error instanceof Error &&
-      error.message.startsWith("Exam id ")
-        ? error.message
-        : "Internal server error.";
+      error instanceof Error ? error.message : "Internal server error.";
     res.status(message === "Internal server error." ? 500 : 400).json({
       message,
     });
   }
 };
 
-export const archiveAdminPackage = async (
+export const deleteAdminPackage = async (
   req: AuthenticatedRequest,
   res: Response,
 ): Promise<void> => {
   try {
-    const id = Number(req.params.id);
-    if (!Number.isInteger(id) || id <= 0) {
-      res.status(400).json({ message: "Invalid package id." });
-      return;
-    }
-
-    const [updated] = await db
-      .update(examPackages)
-      .set({
-        isActive: false,
-        questionCount: 0,
-        updatedAt: new Date(),
-      })
-      .where(eq(examPackages.id, id))
-      .returning({
-        id: examPackages.id,
-        name: examPackages.name,
-        description: examPackages.description,
-        features: examPackages.features,
-        price: examPackages.price,
-        questionCount: examPackages.questionCount,
-        sessionLimit: examPackages.sessionLimit,
-        validityDays: examPackages.validityDays,
-        isActive: examPackages.isActive,
-        createdAt: examPackages.createdAt,
-        updatedAt: examPackages.updatedAt,
-      });
-
-    if (!updated) {
-      res.status(404).json({ message: "Package not found." });
-      return;
-    }
-
-    await db
-      .update(packageExams)
-      .set({
-        isActive: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(packageExams.packageId, id));
-
-    const withExams = await getPackageWithExamsById(updated.id);
-    res.status(200).json({
-      message: "Package archived.",
-      package: withExams ?? toPackageResponse(updated, []),
-    });
-  } catch (error) {
-    console.error("archiveAdminPackage error:", error);
-    res.status(500).json({ message: "Internal server error." });
-  }
-};
-
-export const createAdminPackageExam = async (
-  req: AuthenticatedRequest,
-  res: Response,
-): Promise<void> => {
-  try {
-    const packageId = Number(req.params.packageId);
+    const packageId = Number(req.params.id);
     if (!Number.isInteger(packageId) || packageId <= 0) {
       res.status(400).json({ message: "Invalid package id." });
       return;
     }
 
-    const [pkg] = await db
-      .select({ id: examPackages.id })
-      .from(examPackages)
+    const [deleted] = await db
+      .delete(examPackages)
       .where(eq(examPackages.id, packageId))
-      .limit(1);
+      .returning({
+        id: examPackages.id,
+        name: examPackages.name,
+      });
 
-    if (!pkg) {
+    if (!deleted) {
       res.status(404).json({ message: "Package not found." });
       return;
     }
 
-    const body = req.body as PackageExamPayload;
-    const name = typeof body.name === "string" ? body.name.trim() : "";
-    const description =
-      typeof body.description === "string" ? body.description.trim() : "";
-    const questionCount = normalizePositiveInteger(
-      body.question_count ?? body.questionCount,
-    );
-    const rawSessionLimit = body.session_limit ?? body.sessionLimit;
-    const sessionLimit = normalizeNullablePositiveInteger(rawSessionLimit);
-    const sortOrder =
-      normalizePositiveInteger(body.sort_order ?? body.sortOrder) ?? 1;
-    const isActive = normalizeBoolean(body.is_active ?? body.isActive) ?? true;
-
-    if (!name || !questionCount) {
-      res.status(400).json({
-        message:
-          "Invalid payload. Required fields: name and question_count.",
-      });
-      return;
-    }
-
-    if (
-      sessionLimit === null &&
-      rawSessionLimit !== null &&
-      rawSessionLimit !== undefined &&
-      rawSessionLimit !== ""
-    ) {
-      res.status(400).json({ message: "Invalid session_limit." });
-      return;
-    }
-
-    const [created] = await db
-      .insert(packageExams)
-      .values({
-        packageId,
-        name,
-        description,
-        questionCount,
-        sessionLimit,
-        sortOrder,
-        isActive,
-      })
-      .returning({
-        id: packageExams.id,
-        packageId: packageExams.packageId,
-        name: packageExams.name,
-        description: packageExams.description,
-        questionCount: packageExams.questionCount,
-        sessionLimit: packageExams.sessionLimit,
-        sortOrder: packageExams.sortOrder,
-        isActive: packageExams.isActive,
-        createdAt: packageExams.createdAt,
-        updatedAt: packageExams.updatedAt,
-      });
-
-    await syncPackageQuestionCount(packageId);
-
-    res.status(201).json(toExamResponse(created));
-  } catch (error) {
-    console.error("createAdminPackageExam error:", error);
-    res.status(500).json({ message: "Internal server error." });
-  }
-};
-
-export const updateAdminPackageExam = async (
-  req: AuthenticatedRequest,
-  res: Response,
-): Promise<void> => {
-  try {
-    const examId = Number(req.params.id);
-    if (!Number.isInteger(examId) || examId <= 0) {
-      res.status(400).json({ message: "Invalid exam id." });
-      return;
-    }
-
-    const [existingExam] = await db
-      .select({
-        id: packageExams.id,
-        packageId: packageExams.packageId,
-      })
-      .from(packageExams)
-      .where(eq(packageExams.id, examId))
-      .limit(1);
-
-    if (!existingExam) {
-      res.status(404).json({ message: "Exam not found." });
-      return;
-    }
-
-    const body = req.body as PackageExamPayload;
-    const updates: Partial<{
-      name: string;
-      description: string;
-      questionCount: number;
-      sessionLimit: number | null;
-      sortOrder: number;
-      isActive: boolean;
-      updatedAt: Date;
-    }> = {};
-
-    if (typeof body.name === "string" && body.name.trim()) {
-      updates.name = body.name.trim();
-    }
-    if (typeof body.description === "string") {
-      updates.description = body.description.trim();
-    }
-    if (body.question_count !== undefined || body.questionCount !== undefined) {
-      const questionCount = normalizePositiveInteger(
-        body.question_count ?? body.questionCount,
-      );
-      if (!questionCount) {
-        res.status(400).json({ message: "Invalid question_count." });
-        return;
-      }
-      updates.questionCount = questionCount;
-    }
-    const rawSessionLimit = body.session_limit ?? body.sessionLimit;
-    if (body.session_limit !== undefined || body.sessionLimit !== undefined) {
-      const sessionLimit = normalizeNullablePositiveInteger(rawSessionLimit);
-      if (
-        sessionLimit === null &&
-        rawSessionLimit !== null &&
-        rawSessionLimit !== undefined &&
-        rawSessionLimit !== ""
-      ) {
-        res.status(400).json({ message: "Invalid session_limit." });
-        return;
-      }
-      updates.sessionLimit = sessionLimit;
-    }
-    if (body.sort_order !== undefined || body.sortOrder !== undefined) {
-      const sortOrder = normalizePositiveInteger(
-        body.sort_order ?? body.sortOrder,
-      );
-      if (!sortOrder) {
-        res.status(400).json({ message: "Invalid sort_order." });
-        return;
-      }
-      updates.sortOrder = sortOrder;
-    }
-    if (body.is_active !== undefined || body.isActive !== undefined) {
-      const isActive = normalizeBoolean(body.is_active ?? body.isActive);
-      if (isActive === null) {
-        res.status(400).json({ message: "Invalid is_active." });
-        return;
-      }
-      updates.isActive = isActive;
-    }
-
-    if (Object.keys(updates).length === 0) {
-      res.status(400).json({ message: "No valid fields to update." });
-      return;
-    }
-
-    updates.updatedAt = new Date();
-
-    const [updated] = await db
-      .update(packageExams)
-      .set(updates)
-      .where(eq(packageExams.id, examId))
-      .returning({
-        id: packageExams.id,
-        packageId: packageExams.packageId,
-        name: packageExams.name,
-        description: packageExams.description,
-        questionCount: packageExams.questionCount,
-        sessionLimit: packageExams.sessionLimit,
-        sortOrder: packageExams.sortOrder,
-        isActive: packageExams.isActive,
-        createdAt: packageExams.createdAt,
-        updatedAt: packageExams.updatedAt,
-      });
-
-    await syncPackageQuestionCount(existingExam.packageId);
-
-    res.status(200).json(toExamResponse(updated));
-  } catch (error) {
-    console.error("updateAdminPackageExam error:", error);
-    res.status(500).json({ message: "Internal server error." });
-  }
-};
-
-export const archiveAdminPackageExam = async (
-  req: AuthenticatedRequest,
-  res: Response,
-): Promise<void> => {
-  try {
-    const examId = Number(req.params.id);
-    if (!Number.isInteger(examId) || examId <= 0) {
-      res.status(400).json({ message: "Invalid exam id." });
-      return;
-    }
-
-    const [updated] = await db
-      .update(packageExams)
-      .set({
-        isActive: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(packageExams.id, examId))
-      .returning({
-        id: packageExams.id,
-        packageId: packageExams.packageId,
-        name: packageExams.name,
-        description: packageExams.description,
-        questionCount: packageExams.questionCount,
-        sessionLimit: packageExams.sessionLimit,
-        sortOrder: packageExams.sortOrder,
-        isActive: packageExams.isActive,
-        createdAt: packageExams.createdAt,
-        updatedAt: packageExams.updatedAt,
-      });
-
-    if (!updated) {
-      res.status(404).json({ message: "Exam not found." });
-      return;
-    }
-
-    await syncPackageQuestionCount(updated.packageId);
+    await Promise.all([
+      db
+        .update(packageExams)
+        .set({
+          packageId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(packageExams.packageId, packageId)),
+      db
+        .update(questions)
+        .set({
+          packageId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(questions.packageId, packageId)),
+    ]);
 
     res.status(200).json({
-      message: "Exam archived.",
-      exam: toExamResponse(updated),
+      message: "Package deleted.",
+      package: deleted,
     });
   } catch (error) {
-    console.error("archiveAdminPackageExam error:", error);
+    console.error("deleteAdminPackage error:", error);
     res.status(500).json({ message: "Internal server error." });
   }
 };

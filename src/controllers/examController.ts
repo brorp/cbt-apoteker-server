@@ -7,6 +7,7 @@ import { syncDefaultExamPackages } from "../db/defaultPackages.js";
 import {
   examAnswers,
   examPackages,
+  packageExamAssignments,
   packageExams,
   examSessions,
   questions,
@@ -196,15 +197,22 @@ const getExamCatalogSummary = async (
       examQuestionCount: packageExams.questionCount,
       examIsActive: packageExams.isActive,
     })
-    .from(examPackages)
-    .leftJoin(packageExams, eq(packageExams.packageId, examPackages.id))
+    .from(packageExamAssignments)
+    .innerJoin(examPackages, eq(packageExamAssignments.packageId, examPackages.id))
+    .innerJoin(packageExams, eq(packageExamAssignments.examId, packageExams.id))
     .where(
-      examId
-        ? eq(packageExams.id, examId)
-        : packageId
-          ? eq(examPackages.id, packageId)
-          : undefined,
+      packageId && examId
+        ? and(
+            eq(packageExamAssignments.packageId, packageId),
+            eq(packageExamAssignments.examId, examId),
+          )
+        : examId
+          ? eq(packageExamAssignments.examId, examId)
+          : packageId
+            ? eq(packageExamAssignments.packageId, packageId)
+            : undefined,
     )
+    .orderBy(asc(packageExamAssignments.sortOrder), asc(packageExams.id))
     .limit(1);
 
   return summary ?? null;
@@ -214,31 +222,6 @@ const resolveRequestedExam = async (input: {
   examId: number | null;
   packageId: number | null;
 }) => {
-  if (input.examId) {
-    const [selectedExam] = await db
-      .select({
-        examId: packageExams.id,
-        examName: packageExams.name,
-        examDescription: packageExams.description,
-        examQuestionCount: packageExams.questionCount,
-        examIsActive: packageExams.isActive,
-        packageId: examPackages.id,
-        packageName: examPackages.name,
-        packagePrice: examPackages.price,
-        packageIsActive: examPackages.isActive,
-      })
-      .from(packageExams)
-      .innerJoin(examPackages, eq(packageExams.packageId, examPackages.id))
-      .where(eq(packageExams.id, input.examId))
-      .limit(1);
-
-    return selectedExam ?? null;
-  }
-
-  if (!input.packageId) {
-    return null;
-  }
-
   const [selectedExam] = await db
     .select({
       examId: packageExams.id,
@@ -251,10 +234,22 @@ const resolveRequestedExam = async (input: {
       packagePrice: examPackages.price,
       packageIsActive: examPackages.isActive,
     })
-    .from(packageExams)
-    .innerJoin(examPackages, eq(packageExams.packageId, examPackages.id))
-    .where(eq(packageExams.packageId, input.packageId))
-    .orderBy(asc(packageExams.sortOrder), asc(packageExams.id))
+    .from(packageExamAssignments)
+    .innerJoin(examPackages, eq(packageExamAssignments.packageId, examPackages.id))
+    .innerJoin(packageExams, eq(packageExamAssignments.examId, packageExams.id))
+    .where(
+      input.packageId && input.examId
+        ? and(
+            eq(packageExamAssignments.packageId, input.packageId),
+            eq(packageExamAssignments.examId, input.examId),
+          )
+        : input.examId
+          ? eq(packageExamAssignments.examId, input.examId)
+          : input.packageId
+            ? eq(packageExamAssignments.packageId, input.packageId)
+            : undefined,
+    )
+    .orderBy(asc(packageExamAssignments.sortOrder), asc(packageExams.id))
     .limit(1);
 
   return selectedExam ?? null;

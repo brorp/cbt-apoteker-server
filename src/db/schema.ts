@@ -175,9 +175,9 @@ export const examPackages = pgTable("exam_packages", {
 
 export const packageExams = pgTable("package_exams", {
   id: serial("id").primaryKey(),
-  packageId: integer("package_id")
-    .notNull()
-    .references(() => examPackages.id, { onDelete: "cascade" }),
+  packageId: integer("package_id").references(() => examPackages.id, {
+    onDelete: "set null",
+  }),
   name: varchar("name", { length: 180 }).notNull(),
   description: text("description").notNull().default(""),
   questionCount: integer("question_count").notNull().default(50),
@@ -191,6 +191,32 @@ export const packageExams = pgTable("package_exams", {
     .notNull()
     .defaultNow(),
 });
+
+export const packageExamAssignments = pgTable(
+  "package_exam_assignments",
+  {
+    id: serial("id").primaryKey(),
+    packageId: integer("package_id")
+      .notNull()
+      .references(() => examPackages.id, { onDelete: "cascade" }),
+    examId: integer("exam_id")
+      .notNull()
+      .references(() => packageExams.id, { onDelete: "cascade" }),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => ({
+    packageExamUnique: uniqueIndex("package_exam_assignments_package_exam_idx").on(
+      table.packageId,
+      table.examId,
+    ),
+  }),
+);
 
 export const questions = pgTable("questions", {
   id: serial("id").primaryKey(),
@@ -223,9 +249,9 @@ export const transactions = pgTable("transactions", {
   userId: integer("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
-  packageId: integer("package_id")
-    .notNull()
-      .references(() => examPackages.id, { onDelete: "restrict" }),
+  packageId: integer("package_id").references(() => examPackages.id, {
+    onDelete: "set null",
+  }),
   orderCode: varchar("order_code", { length: 64 }),
   provider: varchar("provider", { length: 32 }).notNull().default("manual"),
   status: transactionStatusEnum("status").notNull().default("created"),
@@ -288,9 +314,9 @@ export const userPackageAccesses = pgTable(
     userId: integer("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    packageId: integer("package_id")
-      .notNull()
-      .references(() => examPackages.id, { onDelete: "restrict" }),
+    packageId: integer("package_id").references(() => examPackages.id, {
+      onDelete: "set null",
+    }),
     transactionId: integer("transaction_id").references(() => transactions.id, {
       onDelete: "set null",
     }),

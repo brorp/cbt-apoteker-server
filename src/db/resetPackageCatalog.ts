@@ -17,6 +17,7 @@ async function resetPackageCatalog() {
         questions,
         user_package_accesses,
         transactions,
+        package_exam_assignments,
         package_exams,
         exam_packages
       RESTART IDENTITY CASCADE

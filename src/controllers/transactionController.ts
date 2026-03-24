@@ -4,7 +4,7 @@ import { asc, eq } from "drizzle-orm";
 import { getMidtransConfig } from "../config/midtrans.js";
 import { db } from "../config/db.js";
 import { syncDefaultExamPackages } from "../db/defaultPackages.js";
-import { examPackages, packageExams } from "../db/schema.js";
+import { examPackages } from "../db/schema.js";
 import type { AuthenticatedRequest } from "../middlewares/authMiddleware.js";
 import {
   PaymentServiceError,
@@ -24,6 +24,7 @@ import {
   isPaymentHubMode,
   verifyPaymentHubCallbackSignature,
 } from "../services/paymentHubService.js";
+import { listPackagesWithExams } from "../services/examCatalogService.js";
 import { logActivity } from "../utils/activityLog.js";
 
 const normalizePositiveInteger = (value: unknown): number | null => {
@@ -73,42 +74,10 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
   try {
     await syncDefaultExamPackages();
 
-    const packages = await db
-      .select({
-        id: examPackages.id,
-        name: examPackages.name,
-        description: examPackages.description,
-        price: examPackages.price,
-        features: examPackages.features,
-        questionCount: examPackages.questionCount,
-      })
-      .from(examPackages)
-      .where(eq(examPackages.isActive, true))
-      .orderBy(asc(examPackages.price), asc(examPackages.questionCount), asc(examPackages.id));
-
-    const exams = packages.length
-      ? await db
-          .select({
-            id: packageExams.id,
-            packageId: packageExams.packageId,
-            name: packageExams.name,
-            description: packageExams.description,
-            questionCount: packageExams.questionCount,
-            sessionLimit: packageExams.sessionLimit,
-            sortOrder: packageExams.sortOrder,
-            isActive: packageExams.isActive,
-          })
-          .from(packageExams)
-          .where(eq(packageExams.isActive, true))
-          .orderBy(asc(packageExams.packageId), asc(packageExams.sortOrder), asc(packageExams.id))
-      : [];
-
-    const examsByPackage = new Map<number, typeof exams>();
-    for (const exam of exams) {
-      const rows = examsByPackage.get(exam.packageId) ?? [];
-      rows.push(exam);
-      examsByPackage.set(exam.packageId, rows);
-    }
+    const packages = await listPackagesWithExams({
+      onlyActivePackages: true,
+      onlyActiveExams: true,
+    });
 
     res.status(200).json(
       packages.map((item) => ({
@@ -117,15 +86,11 @@ export const listPackages = async (_req: Request, res: Response): Promise<void> 
         description: item.description,
         price: item.price,
         features: item.features,
-        question_count:
-          (examsByPackage.get(item.id) ?? []).reduce(
-            (total, exam) => total + exam.questionCount,
-            0,
-          ) || item.questionCount,
-        exam_count: (examsByPackage.get(item.id) ?? []).length,
-        exams: (examsByPackage.get(item.id) ?? []).map((exam) => ({
+        question_count: item.questionCount,
+        exam_count: item.examCount,
+        exams: item.exams.map((exam) => ({
           id: exam.id,
-          package_id: exam.packageId,
+          package_id: item.id,
           name: exam.name,
           description: exam.description,
           question_count: exam.questionCount,

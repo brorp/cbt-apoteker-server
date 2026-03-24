@@ -56,10 +56,10 @@ type TransactionSummaryRow = {
   userId: number;
   userName: string;
   userEmail: string;
-  packageId: number;
-  packageName: string;
-  packageDescription: string;
-  packagePrice: number;
+  packageId: number | null;
+  packageName: string | null;
+  packageDescription: string | null;
+  packagePrice: number | null;
   sessionLimit: number | null;
   validityDays: number | null;
   orderCode: string | null;
@@ -369,8 +369,12 @@ const serializeTransaction = async (
   },
 ) => {
   const [access, sessionsUsed, events] = await Promise.all([
-    getAccessSummary(row.userId, row.packageId),
-    getSessionsUsed(row.userId, row.packageId),
+    row.packageId
+      ? getAccessSummary(row.userId, row.packageId)
+      : Promise.resolve(null),
+    row.packageId
+      ? getSessionsUsed(row.userId, row.packageId)
+      : Promise.resolve(0),
     options.includeEvents ? getPaymentEvents(row.id) : Promise.resolve([]),
   ]);
 

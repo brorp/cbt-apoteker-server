@@ -37,6 +37,7 @@ import {
   QuestionImageError,
   saveQuestionImage,
 } from "../services/questionImageService.js";
+import { listPackageExamAssignments } from "../services/examCatalogService.js";
 
 type QuestionPayload = {
   question_text?: string;
@@ -101,18 +102,28 @@ const getQuestionExam = async (examId: number) => {
   const [questionExam] = await db
     .select({
       id: packageExams.id,
-      packageId: examPackages.id,
       name: packageExams.name,
-      packageName: examPackages.name,
       questionCount: packageExams.questionCount,
       isActive: packageExams.isActive,
     })
     .from(packageExams)
-    .innerJoin(examPackages, eq(packageExams.packageId, examPackages.id))
     .where(eq(packageExams.id, examId))
     .limit(1);
 
-  return questionExam ?? null;
+  if (!questionExam) {
+    return null;
+  }
+
+  const assignments = await listPackageExamAssignments({ examIds: [examId] });
+  return {
+    ...questionExam,
+    packageId: assignments[0]?.packageId ?? null,
+    packageName:
+      assignments.length > 0
+        ? assignments.map((item) => item.packageName).join(", ")
+        : null,
+    packageQuestionCount: null as number | null,
+  };
 };
 
 const resolveQuestionExamId = async (input: {
@@ -127,14 +138,49 @@ const resolveQuestionExamId = async (input: {
     return null;
   }
 
-  const [exam] = await db
-    .select({ id: packageExams.id })
-    .from(packageExams)
-    .where(eq(packageExams.packageId, input.packageId))
-    .orderBy(asc(packageExams.sortOrder), asc(packageExams.id))
-    .limit(1);
+  const [assignment] = await listPackageExamAssignments({
+    packageIds: [input.packageId],
+  });
 
-  return exam?.id ?? null;
+  return assignment?.examId ?? null;
+};
+
+const getExamPackageMetadata = async (examIds: number[]) => {
+  const uniqueExamIds = [...new Set(examIds.filter((item) => item > 0))];
+  if (uniqueExamIds.length === 0) {
+    return new Map<
+      number,
+      {
+        packageId: number | null;
+        packageName: string | null;
+      }
+    >();
+  }
+
+  const assignments = await listPackageExamAssignments({ examIds: uniqueExamIds });
+  const assignmentsByExamId = new Map<number, typeof assignments>();
+
+  for (const assignment of assignments) {
+    const rows = assignmentsByExamId.get(assignment.examId) ?? [];
+    rows.push(assignment);
+    assignmentsByExamId.set(assignment.examId, rows);
+  }
+
+  return new Map(
+    uniqueExamIds.map((examId) => {
+      const rows = assignmentsByExamId.get(examId) ?? [];
+      return [
+        examId,
+        {
+          packageId: rows[0]?.packageId ?? null,
+          packageName:
+            rows.length > 0
+              ? rows.map((row) => row.packageName).join(", ")
+              : null,
+        },
+      ];
+    }),
+  );
 };
 
 const toQuestionResponse = (question: {
@@ -421,7 +467,6 @@ export const listQuestions = async (
   try {
     await syncDefaultExamPackages();
     const examId = normalizePositiveInteger(req.query.exam_id ?? req.query.examId);
-    const packageId = normalizePositiveInteger(req.query.package_id ?? req.query.packageId);
     const isActive =
       req.query.is_active !== undefined
         ? normalizeBoolean(req.query.is_active)
@@ -438,9 +483,6 @@ export const listQuestions = async (
     if (examId) {
       conditions.push(eq(questions.examId, examId));
     }
-    if (packageId) {
-      conditions.push(eq(questions.packageId, packageId));
-    }
     if (isActive !== null) {
       conditions.push(eq(questions.isActive, isActive));
     }
@@ -451,7 +493,6 @@ export const listQuestions = async (
           ilike(questions.questionText, pattern),
           ilike(questions.explanation, pattern),
           ilike(packageExams.name, pattern),
-          ilike(examPackages.name, pattern),
         ),
       );
     }
@@ -462,8 +503,8 @@ export const listQuestions = async (
         examId: questions.examId,
         examName: packageExams.name,
         packageId: questions.packageId,
-        packageName: examPackages.name,
-        packageQuestionCount: examPackages.questionCount,
+        packageName: packageExams.name,
+        packageQuestionCount: packageExams.questionCount,
         questionText: questions.questionText,
         imageUrl: questions.imageUrl,
         optionA: questions.optionA,
@@ -477,11 +518,31 @@ export const listQuestions = async (
       })
       .from(questions)
       .leftJoin(packageExams, eq(questions.examId, packageExams.id))
-      .leftJoin(examPackages, eq(questions.packageId, examPackages.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(questions.id));
 
-    res.status(200).json(rows.map(toQuestionResponse));
+    const packageMetadataByExamId = await getExamPackageMetadata(
+      rows
+        .map((item) => item.examId ?? 0)
+        .filter((item): item is number => item > 0),
+    );
+
+    res.status(200).json(
+      rows.map((item) =>
+        toQuestionResponse({
+          ...item,
+          packageId:
+            item.examId && packageMetadataByExamId.has(item.examId)
+              ? packageMetadataByExamId.get(item.examId)?.packageId ?? null
+              : null,
+          packageName:
+            item.examId && packageMetadataByExamId.has(item.examId)
+              ? packageMetadataByExamId.get(item.examId)?.packageName ?? null
+              : null,
+          packageQuestionCount: null,
+        }),
+      ),
+    );
     await logActivity({
       actorUserId: req.user?.userId ?? null,
       actorRole: req.user?.role ?? null,
@@ -672,7 +733,7 @@ export const createQuestion = async (
     const [created] = await db
       .insert(questions)
       .values({
-        packageId: questionExam.packageId,
+        packageId: null,
         examId,
         questionText: body.question_text.trim(),
         imageUrl: uploadedImageUrl,
@@ -821,7 +882,7 @@ export const updateQuestion = async (
 
     const updates: Partial<{
       examId: number;
-      packageId: number;
+      packageId: number | null;
       questionText: string;
       imageUrl: string | null;
       optionA: string;
@@ -877,7 +938,7 @@ export const updateQuestion = async (
       }
 
       updates.examId = requestedExamId;
-      updates.packageId = responseExam.packageId;
+      updates.packageId = null;
     }
 
     if (typeof body.question_text === "string") updates.questionText = body.question_text;
@@ -1150,7 +1211,7 @@ export const importQuestions = async (
         .insert(questions)
         .values(
           parsedQuestions.map((item) => ({
-            packageId: questionExam.packageId,
+            packageId: null,
             examId,
             questionText: item.questionText,
             optionA: item.optionA,

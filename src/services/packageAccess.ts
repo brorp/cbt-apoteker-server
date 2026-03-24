@@ -10,6 +10,10 @@ import {
   users,
 } from "../db/schema.js";
 import {
+  isExamAssignedToPackage,
+  listPackageExamAssignments,
+} from "./examCatalogService.js";
+import {
   isPaidTransactionStatus,
   toClientTransactionStatus,
 } from "../utils/transactionStatus.js";
@@ -168,7 +172,6 @@ export const getPackageAccessState = async (input: {
       ? db
           .select({
             id: packageExams.id,
-            packageId: packageExams.packageId,
             name: packageExams.name,
             questionCount: packageExams.questionCount,
             sessionLimit: packageExams.sessionLimit,
@@ -196,7 +199,7 @@ export const getPackageAccessState = async (input: {
     input.examId &&
     (!selectedExam ||
       !selectedExam.isActive ||
-      selectedExam.packageId !== questionPackage.id)
+      !(await isExamAssignedToPackage(questionPackage.id, input.examId)))
   ) {
     return {
       allowed: false,
@@ -352,28 +355,14 @@ export const listUserPurchaseHistory = async (userId: number) => {
       ...transactionRows.map((item) => item.packageId),
       ...accessRows.map((item) => item.packageId),
     ]),
-  ];
+  ].filter((value): value is number => typeof value === "number" && value > 0);
 
   const examRows =
     packageIds.length > 0
-      ? await db
-          .select({
-            id: packageExams.id,
-            packageId: packageExams.packageId,
-            name: packageExams.name,
-            description: packageExams.description,
-            questionCount: packageExams.questionCount,
-            sessionLimit: packageExams.sessionLimit,
-            sortOrder: packageExams.sortOrder,
-            isActive: packageExams.isActive,
-          })
-          .from(packageExams)
-          .where(
-            and(
-              inArray(packageExams.packageId, packageIds),
-              eq(packageExams.isActive, true),
-            ),
-          )
+      ? await listPackageExamAssignments({
+          packageIds,
+          onlyActiveExams: true,
+        })
       : [];
 
   const sessionRows =
@@ -419,7 +408,16 @@ export const listUserPurchaseHistory = async (userId: number) => {
 
   for (const exam of examRows) {
     const rows = examsByPackageId.get(exam.packageId) ?? [];
-    rows.push(exam);
+    rows.push({
+      id: exam.examId,
+      packageId: exam.packageId,
+      name: exam.examName,
+      description: exam.examDescription,
+      questionCount: exam.examQuestionCount,
+      sessionLimit: exam.examSessionLimit,
+      sortOrder: exam.assignmentSortOrder,
+      isActive: exam.examIsActive,
+    });
     examsByPackageId.set(exam.packageId, rows);
   }
 
@@ -429,6 +427,9 @@ export const listUserPurchaseHistory = async (userId: number) => {
       access?.status === "active" && access.expiresAt && access.expiresAt.getTime() <= Date.now()
         ? "expired"
         : access?.status ?? (isPaidTransactionStatus(item.transactionStatus) ? "active" : "inactive");
+    const packageExamRows = item.packageId
+      ? (examsByPackageId.get(item.packageId) ?? [])
+      : [];
 
     return {
       id: item.id,
@@ -450,8 +451,8 @@ export const listUserPurchaseHistory = async (userId: number) => {
       grantedAt: access?.grantedAt ?? null,
       activatedAt: access?.activatedAt ?? null,
       expiresAt: access?.expiresAt ?? null,
-      sessionsUsed: sessionsByPackageId.get(item.packageId) ?? 0,
-      exams: (examsByPackageId.get(item.packageId) ?? [])
+      sessionsUsed: item.packageId ? sessionsByPackageId.get(item.packageId) ?? 0 : 0,
+      exams: packageExamRows
         .sort((left, right) => left.sortOrder - right.sortOrder)
         .map((exam) => ({
           id: exam.id,
@@ -468,43 +469,49 @@ export const listUserPurchaseHistory = async (userId: number) => {
 
   const accessOnlyHistory = accessRows
     .filter((item) => !transactionRows.some((transaction) => transaction.packageId === item.packageId))
-    .map((item) => ({
-      id: -item.id,
-      packageId: item.packageId,
-      packageName: item.packageName ?? "-",
-      packageDescription: item.packageDescription ?? "",
-      packagePrice: item.packagePrice ?? 0,
-      orderCode: null,
-      transactionStatus: "paid" as const,
-      paymentMethod: null,
-      paymentType: null,
-      midtransTransactionStatus: null,
-      grossAmount: item.packagePrice ?? 0,
-      snapRedirectUrl: "",
-      accessStatus:
-        item.status === "active" && item.expiresAt && item.expiresAt.getTime() <= Date.now()
-          ? "expired"
-          : item.status,
-      paymentGatewayUrl: "",
-      createdAt: item.grantedAt,
-      paidAt: item.activatedAt,
-      grantedAt: item.grantedAt,
-      activatedAt: item.activatedAt,
-      expiresAt: item.expiresAt,
-      sessionsUsed: sessionsByPackageId.get(item.packageId) ?? 0,
-      exams: (examsByPackageId.get(item.packageId) ?? [])
-        .sort((left, right) => left.sortOrder - right.sortOrder)
-        .map((exam) => ({
-          id: exam.id,
-          packageId: exam.packageId,
-          name: exam.name,
-          description: exam.description,
-          questionCount: exam.questionCount,
-          sessionLimit: exam.sessionLimit,
-          sortOrder: exam.sortOrder,
-          isActive: exam.isActive,
-        })),
-    }));
+    .map((item) => {
+      const packageExamRows = item.packageId
+        ? (examsByPackageId.get(item.packageId) ?? [])
+        : [];
+
+      return {
+        id: -item.id,
+        packageId: item.packageId,
+        packageName: item.packageName ?? "-",
+        packageDescription: item.packageDescription ?? "",
+        packagePrice: item.packagePrice ?? 0,
+        orderCode: null,
+        transactionStatus: "paid" as const,
+        paymentMethod: null,
+        paymentType: null,
+        midtransTransactionStatus: null,
+        grossAmount: item.packagePrice ?? 0,
+        snapRedirectUrl: "",
+        accessStatus:
+          item.status === "active" && item.expiresAt && item.expiresAt.getTime() <= Date.now()
+            ? "expired"
+            : item.status,
+        paymentGatewayUrl: "",
+        createdAt: item.grantedAt,
+        paidAt: item.activatedAt,
+        grantedAt: item.grantedAt,
+        activatedAt: item.activatedAt,
+        expiresAt: item.expiresAt,
+        sessionsUsed: item.packageId ? sessionsByPackageId.get(item.packageId) ?? 0 : 0,
+        exams: packageExamRows
+          .sort((left, right) => left.sortOrder - right.sortOrder)
+          .map((exam) => ({
+            id: exam.id,
+            packageId: exam.packageId,
+            name: exam.name,
+            description: exam.description,
+            questionCount: exam.questionCount,
+            sessionLimit: exam.sessionLimit,
+            sortOrder: exam.sortOrder,
+            isActive: exam.isActive,
+          })),
+      };
+    });
 
   return [...transactionHistory, ...accessOnlyHistory].sort(
     (left, right) =>
