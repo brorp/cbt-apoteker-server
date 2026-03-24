@@ -11,7 +11,8 @@
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
     "seed": "tsx src/db/seed.ts",
-    "seed:catalog:reset": "tsx src/db/resetPackageCatalog.ts"
+    "seed:catalog:reset": "tsx src/db/resetPackageCatalog.ts",
+    "ssh": "ssh ubuntu@43.157.202.131"
   },
   "dependencies": {
     "@types/cors": "^2.8.19",

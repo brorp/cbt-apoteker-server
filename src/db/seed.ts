@@ -6,7 +6,7 @@ async function seed() {
     console.log("Seeding demo accounts...");
 
     try {
-        await syncDefaultExamPackages();
+        await syncDefaultExamPackages({ force: true });
 
         // Super Admin
         await db.insert(users).values({

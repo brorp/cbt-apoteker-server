@@ -23,7 +23,7 @@ async function resetPackageCatalog() {
       RESTART IDENTITY CASCADE
     `);
 
-    await syncDefaultExamPackages();
+    await syncDefaultExamPackages({ force: true });
 
     console.log("Package catalog reset completed successfully.");
     process.exit(0);

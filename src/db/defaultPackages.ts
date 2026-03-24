@@ -100,14 +100,35 @@ export const DEFAULT_EXAM_PACKAGES: DefaultExamPackage[] = [
   },
 ];
 
-export const syncDefaultExamPackages = async (): Promise<void> => {
-  const existingExamRows = await db
-    .select({
-      id: packageExams.id,
-      name: packageExams.name,
-    })
-    .from(packageExams)
-    .orderBy(asc(packageExams.id));
+export const syncDefaultExamPackages = async (options?: {
+  force?: boolean;
+}): Promise<void> => {
+  const [existingExamRows, existingPackageRows] = await Promise.all([
+    db
+      .select({
+        id: packageExams.id,
+        name: packageExams.name,
+      })
+      .from(packageExams)
+      .orderBy(asc(packageExams.id)),
+    db
+      .select({
+        id: examPackages.id,
+        name: examPackages.name,
+      })
+      .from(examPackages)
+      .orderBy(asc(examPackages.id)),
+  ]);
+
+  const shouldSeedDefaults =
+    options?.force === true ||
+    (existingExamRows.length === 0 && existingPackageRows.length === 0);
+
+  if (!shouldSeedDefaults) {
+    await syncPackageExamCatalog();
+    await syncAllPackageQuestionCounts();
+    return;
+  }
 
   const examIdByName = new Map(existingExamRows.map((item) => [item.name, item.id]));
 
@@ -135,17 +156,7 @@ export const syncDefaultExamPackages = async (): Promise<void> => {
     examIdByName.set(created.name, created.id);
   }
 
-  const existingPackageRows = await db
-    .select({
-      id: examPackages.id,
-      name: examPackages.name,
-    })
-    .from(examPackages)
-    .orderBy(asc(examPackages.id));
-
-  const packageIdByName = new Map(
-    existingPackageRows.map((item) => [item.name, item.id]),
-  );
+  const packageIdByName = new Map(existingPackageRows.map((item) => [item.name, item.id]));
 
   for (const pkg of DEFAULT_EXAM_PACKAGES) {
     if (packageIdByName.has(pkg.name)) {
