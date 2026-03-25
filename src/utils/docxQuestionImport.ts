@@ -7,6 +7,7 @@ const END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
 const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
 const WORD_DOCUMENT_XML_PATH = "word/document.xml";
 const OPTION_KEYS: OptionKey[] = ["a", "b", "c", "d", "e"];
+const ANSWER_LINE_PATTERN = /^jawaban\s*:\s*([a-e])\b([\s\S]*)$/i;
 
 export interface ImportedQuestionRow {
   questionText: string;
@@ -43,6 +44,50 @@ const decodeXmlEntities = (value: string): string =>
 const getMatches = (value: string, expression: RegExp): string[] =>
   Array.from(value.matchAll(expression), (match) => match[0]);
 
+const extractTopLevelTagBlocks = (value: string, tagName: string): string[] => {
+  const tagExpression = new RegExp(`<w:${tagName}\\b[^>]*\\/?>|<\\/w:${tagName}>`, "g");
+  const results: string[] = [];
+
+  let depth = 0;
+  let startIndex = -1;
+
+  for (const match of value.matchAll(tagExpression)) {
+    const token = match[0];
+    const tokenIndex = match.index ?? -1;
+    const isClosingTag = token.startsWith(`</w:${tagName}`);
+    const isSelfClosingTag = token.endsWith("/>");
+
+    if (isClosingTag) {
+      if (depth === 0) {
+        continue;
+      }
+
+      depth -= 1;
+      if (depth === 0 && startIndex >= 0) {
+        results.push(value.slice(startIndex, tokenIndex + token.length));
+        startIndex = -1;
+      }
+
+      continue;
+    }
+
+    if (isSelfClosingTag) {
+      if (depth === 0) {
+        results.push(token);
+      }
+      continue;
+    }
+
+    if (depth === 0) {
+      startIndex = tokenIndex;
+    }
+
+    depth += 1;
+  }
+
+  return results;
+};
+
 const normalizeText = (value: string): string =>
   value
     .replace(/\u00a0/g, " ")
@@ -65,9 +110,69 @@ const extractParagraphText = (paragraphXml: string): string => {
 };
 
 const extractCellParagraphs = (cellXml: string): string[] =>
-  getMatches(cellXml, /<w:p\b[\s\S]*?<\/w:p>/g)
+  extractTopLevelTagBlocks(cellXml, "p")
     .map(extractParagraphText)
     .filter((value) => value.length > 0);
+
+const normalizeHeaderCell = (value: string): string =>
+  normalizeText(value).replace(/\s+/g, "").toLowerCase();
+
+const isQuestionTable = (tableXml: string): boolean => {
+  const rows = extractTopLevelTagBlocks(tableXml, "tr");
+  if (rows.length === 0) {
+    return false;
+  }
+
+  const headerCells = extractTopLevelTagBlocks(rows[0], "tc")
+    .slice(0, 3)
+    .map((cellXml) => normalizeHeaderCell(extractCellParagraphs(cellXml).join(" ")));
+
+  return (
+    headerCells.length >= 3 &&
+    headerCells[0] === "no" &&
+    headerCells[1] === "soal" &&
+    headerCells[2] === "jawaban"
+  );
+};
+
+const sanitizeOptionText = (value: string): string =>
+  value.replace(/^[a-e][.)]\s*/i, "").trim();
+
+const parseAnswerCell = (
+  answerParagraphs: string[],
+  rowNumber: number,
+): { correctAnswer: OptionKey; explanation: string } => {
+  if (answerParagraphs.length === 0) {
+    throw new DocxQuestionImportError(
+      `Row ${rowNumber}: kolom Jawaban harus berisi jawaban dan pembahasan.`,
+    );
+  }
+
+  const [firstParagraph, ...remainingParagraphs] = answerParagraphs;
+  const match = firstParagraph.match(ANSWER_LINE_PATTERN);
+
+  if (!match) {
+    throw new DocxQuestionImportError(
+      `Row ${rowNumber}: kolom Jawaban harus diawali format "Jawaban: A" sampai "Jawaban: E".`,
+    );
+  }
+
+  const inlineExplanation = normalizeText(match[2] ?? "");
+  const explanationParagraphs = [
+    ...(inlineExplanation ? [inlineExplanation] : []),
+    ...remainingParagraphs,
+  ].filter((value) => value.length > 0);
+
+  const explanation = explanationParagraphs.join("\n\n").trim();
+  if (!explanation) {
+    throw new DocxQuestionImportError(`Row ${rowNumber}: pembahasan tidak boleh kosong.`);
+  }
+
+  return {
+    correctAnswer: match[1].toLowerCase() as OptionKey,
+    explanation,
+  };
+};
 
 const findEndOfCentralDirectoryOffset = (buffer: Buffer): number => {
   for (let index = buffer.length - 22; index >= 0; index -= 1) {
@@ -139,19 +244,8 @@ const extractZipEntryText = (buffer: Buffer, entryPath: string): string => {
   );
 };
 
-const parseAnswerLine = (answerLine: string, rowNumber: number): OptionKey => {
-  const match = answerLine.match(/^jawaban\s*:\s*([a-e])\b/i);
-  if (!match) {
-    throw new DocxQuestionImportError(
-      `Row ${rowNumber}: kolom Jawaban harus diawali format "Jawaban: A" sampai "Jawaban: E".`,
-    );
-  }
-
-  return match[1].toLowerCase() as OptionKey;
-};
-
 const parseQuestionRow = (rowXml: string, rowNumber: number): ImportedQuestionRow => {
-  const cells = getMatches(rowXml, /<w:tc\b[\s\S]*?<\/w:tc>/g);
+  const cells = extractTopLevelTagBlocks(rowXml, "tc");
   if (cells.length < 3) {
     throw new DocxQuestionImportError(
       `Row ${rowNumber}: template harus memiliki 3 kolom: No, Soal, dan Jawaban.`,
@@ -167,15 +261,10 @@ const parseQuestionRow = (rowXml: string, rowNumber: number): ImportedQuestionRo
     );
   }
 
-  if (answerParagraphs.length < 2) {
-    throw new DocxQuestionImportError(
-      `Row ${rowNumber}: kolom Jawaban harus berisi baris jawaban dan minimal 1 baris pembahasan.`,
-    );
-  }
-
   const questionText = questionParagraphs.slice(0, -5).join("\n\n").trim();
-  const optionValues = questionParagraphs.slice(-5).map((value) => value.trim());
-  const explanation = answerParagraphs.slice(1).join("\n\n").trim();
+  const optionValues = questionParagraphs
+    .slice(-5)
+    .map((value) => sanitizeOptionText(value));
 
   if (!questionText) {
     throw new DocxQuestionImportError(`Row ${rowNumber}: teks soal tidak boleh kosong.`);
@@ -187,11 +276,7 @@ const parseQuestionRow = (rowXml: string, rowNumber: number): ImportedQuestionRo
     );
   }
 
-  if (!explanation) {
-    throw new DocxQuestionImportError(`Row ${rowNumber}: pembahasan tidak boleh kosong.`);
-  }
-
-  const correctAnswer = parseAnswerLine(answerParagraphs[0], rowNumber);
+  const { correctAnswer, explanation } = parseAnswerCell(answerParagraphs, rowNumber);
   const optionsByKey = OPTION_KEYS.reduce<Record<OptionKey, string>>((acc, key, index) => {
     acc[key] = optionValues[index];
     return acc;
@@ -215,7 +300,7 @@ export const parseQuestionTemplateDocx = (buffer: Buffer): ImportedQuestionRow[]
   }
 
   const documentXml = extractZipEntryText(buffer, WORD_DOCUMENT_XML_PATH);
-  const tables = getMatches(documentXml, /<w:tbl\b[\s\S]*?<\/w:tbl>/g);
+  const tables = extractTopLevelTagBlocks(documentXml, "tbl");
 
   if (tables.length === 0) {
     throw new DocxQuestionImportError(
@@ -223,12 +308,33 @@ export const parseQuestionTemplateDocx = (buffer: Buffer): ImportedQuestionRow[]
     );
   }
 
-  const rows = getMatches(tables[0], /<w:tr\b[\s\S]*?<\/w:tr>/g);
+  const questionTable = tables.find(isQuestionTable);
+  if (!questionTable) {
+    throw new DocxQuestionImportError(
+      'Template .docx harus memiliki tabel dengan header "No", "Soal", dan "Jawaban".',
+    );
+  }
+
+  const rows = extractTopLevelTagBlocks(questionTable, "tr");
   if (rows.length < 2) {
     throw new DocxQuestionImportError(
       "Template .docx harus memiliki header dan minimal 1 baris soal.",
     );
   }
 
-  return rows.slice(1).map((rowXml, index) => parseQuestionRow(rowXml, index + 2));
+  const questionRows = rows
+    .slice(1)
+    .map((rowXml, index) => ({ rowXml, rowNumber: index + 2 }))
+    .filter(({ rowXml }) => {
+      const cells = extractTopLevelTagBlocks(rowXml, "tc");
+      return cells.length >= 3;
+    });
+
+  if (questionRows.length === 0) {
+    throw new DocxQuestionImportError(
+      "Template .docx tidak memiliki baris soal yang valid setelah header.",
+    );
+  }
+
+  return questionRows.map(({ rowXml, rowNumber }) => parseQuestionRow(rowXml, rowNumber));
 };
