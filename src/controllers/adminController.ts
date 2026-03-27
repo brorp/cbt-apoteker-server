@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Response } from "express";
 import { and, asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
 
@@ -1140,11 +1141,28 @@ export const importQuestions = async (
   req: AuthenticatedRequest,
   res: Response,
 ): Promise<void> => {
+  const importLogContext: Record<string, unknown> = {
+    actorUserId: req.user?.userId ?? null,
+    actorRole: req.user?.role ?? null,
+  };
+
   try {
     await syncDefaultExamPackages();
 
     const uploadedFile = await getUploadedBinaryFile(req);
     const normalizedName = uploadedFile.originalName.toLowerCase();
+    const fileFingerprint = createHash("sha256")
+      .update(uploadedFile.buffer)
+      .digest("hex");
+
+    Object.assign(importLogContext, {
+      fileName: uploadedFile.originalName,
+      mimeType: uploadedFile.mimeType,
+      fileSizeBytes: uploadedFile.buffer.length,
+      fileFingerprint,
+    });
+
+    console.log("importQuestions received upload", importLogContext);
 
     if (!normalizedName.endsWith(".docx")) {
       await logActivity({
@@ -1166,6 +1184,12 @@ export const importQuestions = async (
     }
 
     const parsedQuestions = parseQuestionTemplateDocx(uploadedFile.buffer);
+    Object.assign(importLogContext, {
+      parsedCount: parsedQuestions.length,
+    });
+
+    console.log("importQuestions parsed template", importLogContext);
+
     if (parsedQuestions.length === 0) {
       res.status(400).json({
         message: "Template .docx tidak mengandung soal yang bisa diimpor.",
@@ -1206,6 +1230,14 @@ export const importQuestions = async (
           uploadedFile.fields.isActive,
       ) ?? false;
 
+    Object.assign(importLogContext, {
+      packageId: questionExam.packageId,
+      packageName: questionExam.packageName,
+      examId,
+      examName: questionExam.name,
+      importedQuestionStatus: isActive ? "active" : "inactive",
+    });
+
     const importedRows = await db.transaction(async (tx) =>
       tx
         .insert(questions)
@@ -1226,6 +1258,12 @@ export const importQuestions = async (
         )
         .returning({ id: questions.id }),
     );
+
+    Object.assign(importLogContext, {
+      importedCount: importedRows.length,
+    });
+
+    console.log("importQuestions saved questions", importLogContext);
 
     res.status(201).json({
       message: "Question bank imported successfully.",
@@ -1257,7 +1295,11 @@ export const importQuestions = async (
       },
     });
   } catch (error) {
-    console.error("importQuestions error:", error);
+    console.error("importQuestions error:", {
+      ...importLogContext,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
 
     if (isUploadRequestError(error)) {
       await logActivity({
@@ -1267,6 +1309,7 @@ export const importQuestions = async (
         entity: "QUESTION",
         status: "failed",
         message: error.message,
+        metadata: importLogContext,
       });
       res.status(error.statusCode).json({ message: error.message });
       return;
@@ -1280,6 +1323,7 @@ export const importQuestions = async (
         entity: "QUESTION",
         status: "failed",
         message: error.message,
+        metadata: importLogContext,
       });
       res.status(400).json({ message: error.message });
       return;
@@ -1292,6 +1336,7 @@ export const importQuestions = async (
       entity: "QUESTION",
       status: "failed",
       message: "Question import failed due to internal server error.",
+      metadata: importLogContext,
     });
     res.status(500).json({ message: "Internal server error." });
   }
