@@ -89,13 +89,27 @@ const getAssignedQuestionCountsByExamId = async (
     .where(inArray(questions.examId, uniqueExamIds))
     .groupBy(questions.examId);
 
+  const normalizeInteger = (value: unknown): number | null => {
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? Math.trunc(value) : null;
+    }
+
+    if (typeof value === "string" && value.trim().length > 0) {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+    }
+
+    return null;
+  };
+
   return new Map(
     rows
       .filter(
         (row): row is { examId: number; count: number } =>
-          typeof row.examId === "number" && Number.isInteger(row.count),
+          typeof row.examId === "number" &&
+          normalizeInteger(row.count) !== null,
       )
-      .map((row) => [row.examId, row.count]),
+      .map((row) => [row.examId, normalizeInteger(row.count) ?? 0]),
   );
 };
 
