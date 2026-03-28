@@ -5,6 +5,7 @@ import {
   examPackages,
   packageExamAssignments,
   packageExams,
+  questions,
 } from "../db/schema.js";
 
 type PackageRow = {
@@ -24,6 +25,7 @@ type ExamRow = {
   name: string;
   description: string;
   questionCount: number;
+  assignedQuestionCount: number;
   sessionLimit: number | null;
   sortOrder: number;
   isActive: boolean;
@@ -68,6 +70,33 @@ const selectExamRow = {
   isActive: packageExams.isActive,
   createdAt: packageExams.createdAt,
   updatedAt: packageExams.updatedAt,
+};
+
+const getAssignedQuestionCountsByExamId = async (
+  examIds: number[],
+): Promise<Map<number, number>> => {
+  const uniqueExamIds = [...new Set(examIds.filter((item) => item > 0))];
+  if (uniqueExamIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = await db
+    .select({
+      examId: questions.examId,
+      count: sql<number>`cast(count(*) as int)`,
+    })
+    .from(questions)
+    .where(inArray(questions.examId, uniqueExamIds))
+    .groupBy(questions.examId);
+
+  return new Map(
+    rows
+      .filter(
+        (row): row is { examId: number; count: number } =>
+          typeof row.examId === "number" && Number.isInteger(row.count),
+      )
+      .map((row) => [row.examId, row.count]),
+  );
 };
 
 export const syncPackageExamCatalog = async (): Promise<void> => {
@@ -211,6 +240,9 @@ export const listPackagesWithExams = async (input?: {
           onlyActivePackages: false,
         })
       : [];
+  const assignedQuestionCounts = await getAssignedQuestionCountsByExamId(
+    assignmentRows.map((item) => item.examId),
+  );
 
   const assignmentsByPackageId = new Map<number, AssignmentRow[]>();
   for (const row of assignmentRows) {
@@ -226,6 +258,7 @@ export const listPackagesWithExams = async (input?: {
       name: row.examName,
       description: row.examDescription,
       questionCount: row.examQuestionCount,
+      assignedQuestionCount: assignedQuestionCounts.get(row.examId) ?? 0,
       sessionLimit: row.examSessionLimit,
       sortOrder: row.assignmentSortOrder,
       isActive: row.examIsActive,
@@ -260,6 +293,9 @@ export const listExamsWithPackages = async (input?: {
           onlyActiveExams: false,
         })
       : [];
+  const assignedQuestionCounts = await getAssignedQuestionCountsByExamId(
+    examRows.map((item) => item.id),
+  );
 
   const assignmentsByExamId = new Map<number, AssignmentRow[]>();
   for (const row of assignmentRows) {
@@ -270,6 +306,7 @@ export const listExamsWithPackages = async (input?: {
 
   return examRows.map((item) => ({
     ...item,
+    assignedQuestionCount: assignedQuestionCounts.get(item.id) ?? 0,
     packages: (assignmentsByExamId.get(item.id) ?? []).map((row) => ({
       id: row.packageId,
       name: row.packageName,
@@ -291,9 +328,11 @@ export const getExamCatalogById = async (examId: number) => {
   }
 
   const assignments = await listPackageExamAssignments({ examIds: [examId] });
+  const assignedQuestionCounts = await getAssignedQuestionCountsByExamId([examId]);
 
   return {
     ...exam,
+    assignedQuestionCount: assignedQuestionCounts.get(examId) ?? 0,
     packages: assignments.map((item) => ({
       id: item.packageId,
       name: item.packageName,
